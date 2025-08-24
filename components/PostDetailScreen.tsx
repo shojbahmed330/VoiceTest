@@ -33,25 +33,28 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
 
 
   const fetchPostDetails = useCallback(async () => {
-      const fetchedPost = await geminiService.getPostById(postId);
-      setPost(fetchedPost);
-      return fetchedPost;
+      return await geminiService.getPostById(postId);
   }, [postId]);
 
-
+  // Effect for initial fetching and handling newly added comments
   useEffect(() => {
     let isMounted = true;
     
     const initialFetch = async () => {
       setIsLoading(true);
       const fetchedPost = await fetchPostDetails();
-      if (!isMounted) return;
+      if (!isMounted || !fetchedPost) {
+          setIsLoading(false);
+          // Handle post not found case
+          return;
+      }
 
+      setPost(fetchedPost);
       setIsLoading(false);
       onSetTtsMessage(getTtsPrompt('post_details_loaded', language));
 
       if (newlyAddedCommentId) {
-        const newComment = fetchedPost?.comments.find(c => c.id === newlyAddedCommentId);
+        const newComment = fetchedPost.comments.find(c => c.id === newlyAddedCommentId);
         if (newComment && newComment.type === 'audio') {
             setPlayingCommentId(newlyAddedCommentId);
         }
@@ -62,19 +65,29 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
     };
     
     initialFetch();
-    
-    const commentInterval = setInterval(async () => {
-        const freshPost = await geminiService.getPostById(postId);
-        if (isMounted && freshPost && post && freshPost.commentCount > post.commentCount) {
-            setPost(freshPost);
-        }
-    }, 5000);
 
     return () => {
         isMounted = false;
+    }
+  }, [postId, newlyAddedCommentId, fetchPostDetails, onSetTtsMessage, language]);
+
+  // Effect for polling for new comments
+  useEffect(() => {
+    const commentInterval = setInterval(async () => {
+        const freshPost = await geminiService.getPostById(postId);
+        setPost(currentPost => {
+            if (freshPost && currentPost && freshPost.commentCount > currentPost.commentCount) {
+                return freshPost;
+            }
+            return currentPost;
+        });
+    }, 5000);
+
+    return () => {
         clearInterval(commentInterval);
     }
-  }, [postId, newlyAddedCommentId, fetchPostDetails, onSetTtsMessage, post, language]);
+  }, [postId]);
+
 
   useEffect(() => {
     const scrollContainer = scrollContainerRef.current;
