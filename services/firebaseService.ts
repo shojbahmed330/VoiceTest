@@ -478,10 +478,10 @@ export const firebaseService = {
             throw new Error("Comment must have content.");
         }
     
-        // Prepare the object for Firestore, replacing the client timestamp with a server one
+        // Prepare the object for Firestore
         const finalCommentObject = { ...newComment };
         delete finalCommentObject.id; // ID is not stored in the array object
-        finalCommentObject.createdAt = serverTimestamp();
+        finalCommentObject.createdAt = new Date(); 
     
         await postRef.update({
             comments: arrayUnion(finalCommentObject),
