@@ -445,7 +445,7 @@ export const firebaseService = {
         }
     },
     
-    async createComment(user: User, postId: string, data: { text?: string; imageUrl?: string; audioUrl?: string; duration?: number }): Promise<Comment | null> {
+    async createComment(user: User, postId: string, data: { text?: string; imageFile?: File; audioBlob?: Blob; duration?: number }): Promise<Comment | null> {
         if (user.commentingSuspendedUntil && new Date(user.commentingSuspendedUntil) > new Date()) {
             console.warn(`User ${user.id} is suspended from commenting.`);
             return null;
@@ -462,16 +462,14 @@ export const firebaseService = {
             createdAt: new Date().toISOString(), // Temporary client-side timestamp
         };
     
-        if (data.audioUrl && data.duration) {
+        if (data.audioBlob && data.duration) {
             newComment.type = 'audio';
             newComment.duration = data.duration;
-            const audioBlob = await fetch(data.audioUrl).then(r => r.blob());
-            const { url } = await uploadMediaToCloudinary(audioBlob, `comment_audio_${newComment.id}.webm`);
+            const { url } = await uploadMediaToCloudinary(data.audioBlob, `comment_audio_${newComment.id}.webm`);
             newComment.audioUrl = url;
-        } else if (data.imageUrl) {
+        } else if (data.imageFile) {
             newComment.type = 'image';
-            const imageBlob = await fetch(data.imageUrl).then(r => r.blob());
-            const { url } = await uploadMediaToCloudinary(imageBlob, `comment_image_${newComment.id}.jpeg`);
+            const { url } = await uploadMediaToCloudinary(data.imageFile, `comment_image_${newComment.id}.jpeg`);
             newComment.imageUrl = url;
         } else if (data.text) {
             newComment.type = 'text';

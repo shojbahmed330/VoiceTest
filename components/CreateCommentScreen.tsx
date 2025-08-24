@@ -18,10 +18,11 @@ interface CreateCommentScreenProps {
   onGoBack: () => void;
 }
 
-type CommentMode = 'audio' | 'text' | 'image';
+type CommentMode = 'text' | 'image' | 'audio';
+const EMOJIS = ['😂', '❤️', '👍', '😢', '😡', '🔥', '😊', '😮'];
 
 const CreateCommentScreen: React.FC<CreateCommentScreenProps> = ({ user, postId, onCommentPosted, onSetTtsMessage, lastCommand, onCommandProcessed, onGoBack }) => {
-  const [mode, setMode] = useState<CommentMode>('audio');
+  const [mode, setMode] = useState<CommentMode>('text');
   
   // Audio state
   const [recordingState, setRecordingState] = useState<RecordingState>(RecordingState.IDLE);
@@ -63,6 +64,8 @@ const CreateCommentScreen: React.FC<CreateCommentScreenProps> = ({ user, postId,
         URL.revokeObjectURL(audioUrl);
         setAudioUrl(null);
     }
+    setRecordingState(RecordingState.IDLE);
+
     try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         const recorder = new MediaRecorder(stream);
@@ -87,9 +90,8 @@ const CreateCommentScreen: React.FC<CreateCommentScreenProps> = ({ user, postId,
         } else {
             onSetTtsMessage(getTtsPrompt('error_mic_permission', language));
         }
-        onGoBack(); // Go back if mic fails, as it's the primary action
     }
-  }, [audioUrl, onSetTtsMessage, startTimer, duration, onGoBack, language]);
+  }, [audioUrl, onSetTtsMessage, startTimer, duration, language]);
 
   const stopRecording = useCallback(() => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
@@ -100,9 +102,7 @@ const CreateCommentScreen: React.FC<CreateCommentScreenProps> = ({ user, postId,
   }, [stopTimer]);
   
   useEffect(() => {
-    if(mode === 'audio' && recordingState === RecordingState.IDLE) {
-        startRecording();
-    }
+    onSetTtsMessage("Write your comment, or switch to image or voice.");
     return () => {
         stopTimer();
         if (audioUrl) URL.revokeObjectURL(audioUrl);
@@ -110,7 +110,7 @@ const CreateCommentScreen: React.FC<CreateCommentScreenProps> = ({ user, postId,
         mediaRecorderRef.current?.stream?.getTracks().forEach(track => track.stop());
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode]);
+  }, []);
 
   const handlePost = useCallback(async () => {
     setIsPosting(true);
@@ -119,13 +119,14 @@ const CreateCommentScreen: React.FC<CreateCommentScreenProps> = ({ user, postId,
         if (mode === 'text' && text.trim()) {
             onSetTtsMessage('Posting text comment...');
             newComment = await firebaseService.createComment(user, postId, { text });
-        } else if (mode === 'image' && imagePreview) {
+        } else if (mode === 'image' && imageFile) {
             onSetTtsMessage('Uploading image comment...');
-            newComment = await firebaseService.createComment(user, postId, { imageUrl: imagePreview });
+            newComment = await firebaseService.createComment(user, postId, { imageFile });
         } else if (mode === 'audio' && duration > 0 && audioUrl) {
             onSetTtsMessage('Posting voice comment...');
             setRecordingState(RecordingState.UPLOADING);
-            newComment = await firebaseService.createComment(user, postId, { duration, audioUrl });
+            const audioBlob = await fetch(audioUrl).then(r => r.blob());
+            newComment = await firebaseService.createComment(user, postId, { duration, audioBlob });
         } else {
              onSetTtsMessage('Please add content to your comment.');
              setIsPosting(false);
@@ -139,7 +140,7 @@ const CreateCommentScreen: React.FC<CreateCommentScreenProps> = ({ user, postId,
         onSetTtsMessage("Sorry, there was an error posting your comment.");
         setIsPosting(false);
     }
-  }, [user, postId, onCommentPosted, onSetTtsMessage, mode, text, imagePreview, duration, audioUrl]);
+  }, [user, postId, onCommentPosted, onSetTtsMessage, mode, text, imageFile, duration, audioUrl]);
 
   const handleCommand = useCallback(async (command: string) => {
     try {
@@ -197,31 +198,37 @@ const CreateCommentScreen: React.FC<CreateCommentScreenProps> = ({ user, postId,
     switch (mode) {
       case 'text':
         return (
-          <div className="w-full bg-slate-700 rounded-b-lg p-4 flex flex-col items-center justify-center">
+          <div className="w-full bg-slate-800 rounded-b-lg p-4 flex flex-col items-center justify-center">
             <textarea
                 value={text}
                 onChange={e => setText(e.target.value)}
                 placeholder="Write your comment..."
                 rows={5}
-                className="w-full bg-slate-800 border-slate-600 rounded-lg p-4 focus:ring-rose-500 focus:border-rose-500 text-lg resize-none"
+                className="w-full bg-slate-700 border-slate-600 rounded-lg p-4 focus:ring-rose-500 focus:border-rose-500 text-lg resize-none"
                 autoFocus
             />
-             <button className="mt-2 mr-auto px-3 py-1.5 text-sm bg-slate-600 hover:bg-slate-500 rounded-full">Add Emoji (Not Implemented)</button>
+             <div className="flex gap-2 mt-2 self-start">
+                {EMOJIS.map(emoji => (
+                    <button key={emoji} onClick={() => setText(t => t + emoji)} className="text-2xl p-1 rounded-md hover:bg-slate-600/50 transition-transform hover:scale-110">
+                        {emoji}
+                    </button>
+                ))}
+            </div>
           </div>
         );
       case 'image':
         return (
-          <div className="w-full bg-slate-700 rounded-b-lg p-4 flex flex-col items-center justify-center h-48">
+          <div className="w-full bg-slate-800 rounded-b-lg p-4 flex flex-col items-center justify-center min-h-[240px]">
             <input type="file" accept="image/*" ref={fileInputRef} onChange={handleFileChange} className="hidden" />
             {imagePreview ? (
               <div className="relative group">
-                <img src={imagePreview} alt="Preview" className="max-h-36 rounded-md"/>
+                <img src={imagePreview} alt="Preview" className="max-h-48 rounded-md"/>
                 <button onClick={() => fileInputRef.current?.click()} className="absolute inset-0 bg-black/50 flex items-center justify-center text-white opacity-0 group-hover:opacity-100 transition-opacity">
                     Change
                 </button>
               </div>
             ) : (
-              <button onClick={() => fileInputRef.current?.click()} className="flex flex-col items-center gap-2 text-slate-400 hover:text-white">
+              <button onClick={() => fileInputRef.current?.click()} className="flex flex-col items-center gap-2 text-slate-400 hover:text-white transition-colors">
                 <Icon name="photo" className="w-12 h-12"/>
                 <span>Upload an Image</span>
               </button>
@@ -231,12 +238,20 @@ const CreateCommentScreen: React.FC<CreateCommentScreenProps> = ({ user, postId,
       case 'audio':
       default:
         return (
-            <div className="w-full bg-slate-700 rounded-b-lg p-4 flex flex-col items-center justify-center h-48">
+            <div className="w-full bg-slate-800 rounded-b-lg p-4 flex flex-col items-center justify-center min-h-[240px]">
+                {recordingState === RecordingState.IDLE && (
+                    <button onClick={startRecording} className="flex flex-col items-center gap-2 text-slate-400 hover:text-white transition-colors">
+                        <Icon name="mic" className="w-12 h-12"/>
+                        <span>Start Recording</span>
+                    </button>
+                )}
                 {recordingState === RecordingState.PREVIEW && audioUrl ? (
-                    <div className="text-center w-full">
+                    <div className="text-center w-full space-y-3">
                         <p className="text-lg">Preview your {duration}s comment</p>
-                        <audio src={audioUrl} controls className="w-full my-2" />
-                        <p className="text-sm text-slate-400">Say "post comment" or "re-record"</p>
+                        <audio src={audioUrl} controls className="w-full" />
+                        <div className="flex justify-center gap-4">
+                            <button onClick={startRecording} className="px-4 py-2 rounded-lg bg-slate-600 hover:bg-slate-500 text-white font-semibold transition-colors">Re-record</button>
+                        </div>
                     </div>
                 ) : recordingState === RecordingState.RECORDING ? (
                     <>
@@ -244,10 +259,11 @@ const CreateCommentScreen: React.FC<CreateCommentScreenProps> = ({ user, postId,
                             <Waveform isPlaying={false} isRecording={true}/>
                         </div>
                         <p className="text-2xl font-mono mt-2">00:{duration.toString().padStart(2, '0')}</p>
+                        <button onClick={stopRecording} className="mt-4 p-4 rounded-full bg-rose-600 hover:bg-rose-500 text-white">
+                            <Icon name="pause" className="w-6 h-6" />
+                        </button>
                     </>
-                ) : (
-                    <p className="text-lg text-slate-400">Initializing microphone...</p>
-                )}
+                ) : null}
             </div>
         );
     }
@@ -259,9 +275,9 @@ const CreateCommentScreen: React.FC<CreateCommentScreenProps> = ({ user, postId,
     <div className="flex flex-col items-center justify-center h-full text-center text-slate-100 p-4 sm:p-8">
       <div className="w-full max-w-lg">
         <div className="flex">
-            <TabButton label="Voice" iconName="mic" targetMode="audio" />
             <TabButton label="Text" iconName="edit" targetMode="text" />
             <TabButton label="Image" iconName="photo" targetMode="image" />
+            <TabButton label="Voice" iconName="mic" targetMode="audio" />
         </div>
         {renderContent()}
         <button 
