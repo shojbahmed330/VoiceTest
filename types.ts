@@ -1,7 +1,4 @@
 
-
-
-
 export interface User {
   id: string;
   name: string; // Full Name
@@ -53,7 +50,7 @@ export interface User {
   commentingSuspendedUntil?: string; // ISO 8601 string
   postingSuspendedUntil?: string; // ISO 8601 string
   isDeactivated?: boolean;
-  lastActive?: string; // ISO 8601 string for last seen timestamp
+  lastActiveTimestamp?: string; // ISO 8601 string for last seen timestamp
   
   // Friends list
   onlineStatus?: 'online' | 'offline';

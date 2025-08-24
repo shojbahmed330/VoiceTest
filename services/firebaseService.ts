@@ -969,7 +969,7 @@ export const firebaseService = {
     
         // 5. Active users
         const fiveMinutesAgo = firebase.firestore.Timestamp.fromDate(new Date(Date.now() - 5 * 60 * 1000));
-        const activeUsersQuery = usersColl.where('lastActive', '>=', fiveMinutesAgo);
+        const activeUsersQuery = usersColl.where('lastActiveTimestamp', '>=', fiveMinutesAgo);
         const activeUsersSnapshot = await activeUsersQuery.get();
         const activeUsersNow = activeUsersSnapshot.size;
     
@@ -1116,10 +1116,7 @@ export const firebaseService = {
     async updateUserLastActive(userId: string): Promise<void> {
         const userRef = db.collection('users').doc(userId);
         try {
-            // Using set with merge as it can be more robust against race conditions
-            // where the document might not exist locally when the update is called,
-            // and it can be less restrictive in some security rule configurations.
-            await userRef.set({ lastActive: serverTimestamp() }, { merge: true });
+            await userRef.set({ lastActiveTimestamp: serverTimestamp() }, { merge: true });
         } catch (error) {
             console.error("Failed to update last active timestamp. This may be a Firestore security rule issue.", error);
         }
