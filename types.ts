@@ -1,6 +1,7 @@
 
 
 
+
 export interface User {
   id: string;
   name: string; // Full Name
@@ -111,8 +112,8 @@ export interface Post {
   createdAt: string; // ISO 8601 string
   commentCount: number;
   comments: Comment[];
-  reactions?: { [emoji: string]: string[] }; // Map of emoji to array of user IDs
-  reactionCount?: number;
+  reactions?: { [userId: string]: string }; // Map of userId to emoji string
+  reactionCount?: number; // This can be deprecated if we calculate on client, but keeping for now.
   imageUrl?: string;
   imagePrompt?: string;
   videoUrl?: string;

@@ -53,30 +53,25 @@ export const PostCard: React.FC<PostCardProps> = ({ post, currentUser, isActive,
 
   const myReaction = React.useMemo(() => {
     if (!currentUser || !post.reactions) return null;
-    for (const emoji in post.reactions) {
-        if (post.reactions[emoji].includes(currentUser.id)) {
-            return emoji;
-        }
-    }
-    return null;
+    return post.reactions[currentUser.id] || null;
   }, [currentUser, post.reactions]);
 
   const topReactions = React.useMemo(() => {
     if (!post.reactions) return [];
-    return Object.entries(post.reactions)
-      .filter(([, userIds]) => userIds && userIds.length > 0)
-      .sort((a, b) => b[1].length - a[1].length)
-      .slice(0, 3)
-      .map(entry => entry[0]);
+    const emojiCounts: { [emoji: string]: number } = {};
+    for (const userId in post.reactions) {
+        const emoji = post.reactions[userId];
+        emojiCounts[emoji] = (emojiCounts[emoji] || 0) + 1;
+    }
+    return Object.entries(emojiCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(entry => entry[0]);
   }, [post.reactions]);
 
   const reactionCount = useMemo(() => {
     if (!post.reactions) return 0;
-    const uniqueUserIds = new Set<string>();
-    Object.values(post.reactions).forEach(userIds => {
-      userIds.forEach(id => uniqueUserIds.add(id));
-    });
-    return uniqueUserIds.size;
+    return Object.keys(post.reactions).length;
   }, [post.reactions]);
 
   const userVotedOptionIndex = currentUser && post.poll ? post.poll.options.findIndex(opt => opt.votedBy.includes(currentUser.id)) : -1;
@@ -130,7 +125,7 @@ export const PostCard: React.FC<PostCardProps> = ({ post, currentUser, isActive,
 
   const handleDefaultReact = (e: React.MouseEvent) => {
     e.stopPropagation();
-    onReact(post.id, myReaction || '👍');
+    onReact(post.id, myReaction === '👍' ? '👍' : '👍');
   };
   
   const handleMouseEnter = () => {
@@ -344,8 +339,6 @@ export const PostCard: React.FC<PostCardProps> = ({ post, currentUser, isActive,
   const fontWeightClass = post.captionStyle?.fontWeight === 'bold' ? 'font-bold' : '';
   const fontStyleClass = post.captionStyle?.fontStyle === 'italic' ? 'italic' : '';
   
-  const hasLiked = myReaction === '👍';
-
   return (
     <>
       <div
@@ -467,7 +460,7 @@ export const PostCard: React.FC<PostCardProps> = ({ post, currentUser, isActive,
           )}
         </div>
       </div>
-      {isReactionModalOpen && (
+      {isReactionModalOpen && currentUser && (
           <ReactionListModal
               isOpen={isReactionModalOpen}
               onClose={() => setIsReactionModalOpen(false)}

@@ -25,21 +25,12 @@ const ReelCard: React.FC<ReelCardProps> = ({ post, currentUser, isActive, onReac
   
   const myReaction = useMemo(() => {
     if (!currentUser || !post.reactions) return null;
-    for (const emoji in post.reactions) {
-        if (post.reactions[emoji].includes(currentUser.id)) {
-            return emoji;
-        }
-    }
-    return null;
+    return post.reactions[currentUser.id] || null;
   }, [currentUser, post.reactions]);
 
   const reactionCount = useMemo(() => {
     if (!post.reactions) return 0;
-    const uniqueUserIds = new Set<string>();
-    Object.values(post.reactions).forEach(userIds => {
-      userIds.forEach(id => uniqueUserIds.add(id));
-    });
-    return uniqueUserIds.size;
+    return Object.keys(post.reactions).length;
   }, [post.reactions]);
 
 
@@ -70,7 +61,7 @@ const ReelCard: React.FC<ReelCardProps> = ({ post, currentUser, isActive, onReac
   
   const handleDefaultReact = (e: React.MouseEvent | React.TouchEvent) => {
       e.stopPropagation();
-      onReact(post.id, '👍');
+      onReact(post.id, myReaction === '👍' ? '👍' : '👍');
       setPickerOpen(false);
   };
   

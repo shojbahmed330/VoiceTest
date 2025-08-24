@@ -38,7 +38,6 @@ const docToPost = (doc: firebase.firestore.DocumentSnapshot): Post => {
         id: doc.id,
         createdAt: data.createdAt instanceof firebase.firestore.Timestamp ? data.createdAt.toDate().toISOString() : new Date().toISOString(),
         reactions: data.reactions || {},
-        reactionCount: data.reactionCount || 0,
         comments: data.comments || [],
         commentCount: data.commentCount || 0,
     } as Post;
@@ -313,7 +312,6 @@ export const firebaseService = {
     listenToExplorePosts(currentUserId: string, callback: (posts: Post[]) => void) {
         const q = db.collection('posts')
             .where('author.privacySettings.postVisibility', '==', 'public')
-            .orderBy('reactionCount', 'desc')
             .orderBy('createdAt', 'desc')
             .limit(50);
         return q.onSnapshot((snapshot) => {
@@ -358,7 +356,6 @@ export const firebaseService = {
             ...restOfPostData,
             author: authorInfo,
             createdAt: serverTimestamp(),
-            reactionCount: 0,
             reactions: {},
             commentCount: 0,
             comments: [],
@@ -426,32 +423,19 @@ export const firebaseService = {
                 if (!postDoc.exists) throw "Post does not exist!";
     
                 const postData = postDoc.data() as Post;
+                // New data structure: { [userId]: emoji }
                 const reactions = { ...(postData.reactions || {}) };
-                let userPreviousReaction: string | null = null;
+                
+                const userPreviousReaction = reactions[userId];
     
-                // Step 1: Find and remove any previous reaction by this user
-                for (const emoji in reactions) {
-                    const userIndex = (reactions[emoji] || []).indexOf(userId);
-                    if (userIndex > -1) {
-                        userPreviousReaction = emoji;
-                        reactions[emoji].splice(userIndex, 1);
-                        // If the emoji list is now empty, remove the key
-                        if (reactions[emoji].length === 0) {
-                            delete reactions[emoji];
-                        }
-                        break; // A user can only have one reaction
-                    }
-                }
-    
-                // Step 2: Add the new reaction, but only if it's different from the one we just removed
-                if (userPreviousReaction !== newReaction) {
-                    if (!reactions[newReaction]) {
-                        reactions[newReaction] = [];
-                    }
-                    reactions[newReaction].push(userId);
+                if (userPreviousReaction === newReaction) {
+                    // User is toggling off their reaction.
+                    delete reactions[userId];
+                } else {
+                    // User is adding a new reaction or changing their existing one.
+                    reactions[userId] = newReaction;
                 }
                 
-                // Only update the reactions map. The client will calculate the count.
                 transaction.update(postRef, { reactions });
             });
             return true;
@@ -1132,11 +1116,11 @@ export const firebaseService = {
     async updateUserLastActive(userId: string): Promise<void> {
         const userRef = db.collection('users').doc(userId);
         try {
-            // Update directly without a prior get. This avoids needing 'read' permissions 
-            // if rules are split, which can cause permission errors.
-            await userRef.update({ lastActive: serverTimestamp() });
+            // Using set with merge as it can be more robust against race conditions
+            // where the document might not exist locally when the update is called,
+            // and it can be less restrictive in some security rule configurations.
+            await userRef.set({ lastActive: serverTimestamp() }, { merge: true });
         } catch (error) {
-            // This error is likely due to restrictive Firestore rules if it persists.
             console.error("Failed to update last active timestamp. This may be a Firestore security rule issue.", error);
         }
     },
@@ -1448,7 +1432,6 @@ export const firebaseService = {
                 commentCount: 0,
                 comments: [],
                 reactions: {},
-                reactionCount: 0,
             };
 
             return adPost;

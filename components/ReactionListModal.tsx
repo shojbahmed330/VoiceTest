@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { User } from '../types';
 import { firebaseService } from '../services/firebaseService';
 import Icon from './Icon';
@@ -6,28 +6,39 @@ import Icon from './Icon';
 interface ReactionListModalProps {
   isOpen: boolean;
   onClose: () => void;
-  reactions: { [emoji: string]: string[] };
+  reactions: { [userId: string]: string };
 }
 
 const ReactionListModal: React.FC<ReactionListModalProps> = ({ isOpen, onClose, reactions }) => {
-  const reactionEntries = Object.entries(reactions).filter(([, userIds]) => userIds && userIds.length > 0);
+  const reactionCounts = useMemo(() => {
+    const counts: { [emoji: string]: string[] } = {};
+    for (const userId in reactions) {
+        const emoji = reactions[userId];
+        if (!counts[emoji]) {
+            counts[emoji] = [];
+        }
+        counts[emoji].push(userId);
+    }
+    return counts;
+  }, [reactions]);
+
+  const reactionEntries = Object.entries(reactionCounts).filter(([, userIds]) => userIds && userIds.length > 0);
   
   const [activeTab, setActiveTab] = useState(reactionEntries[0]?.[0] || '');
   const [users, setUsers] = useState<User[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
-    // If the modal is opened, and the activeTab is not valid anymore, reset it
-    if (isOpen && !reactions[activeTab]) {
+    if (isOpen && !reactionCounts[activeTab]) {
         setActiveTab(reactionEntries[0]?.[0] || '');
     }
-  }, [isOpen, reactions, activeTab, reactionEntries]);
+  }, [isOpen, reactionCounts, activeTab, reactionEntries]);
 
   useEffect(() => {
     if (isOpen && activeTab) {
       const fetchUsers = async () => {
         setIsLoading(true);
-        const userIds = reactions[activeTab] || [];
+        const userIds = reactionCounts[activeTab] || [];
         if (userIds.length > 0) {
           const fetchedUsers = await firebaseService.getUsersByIds(userIds);
           setUsers(fetchedUsers);
@@ -38,7 +49,7 @@ const ReactionListModal: React.FC<ReactionListModalProps> = ({ isOpen, onClose, 
       };
       fetchUsers();
     }
-  }, [isOpen, activeTab, reactions]);
+  }, [isOpen, activeTab, reactionCounts]);
 
   if (!isOpen) return null;
 
