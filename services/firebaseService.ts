@@ -370,6 +370,7 @@ export const firebaseService = {
         const q = db.collection('posts')
             .where('videoUrl', '!=', null)
             .where('author.privacySettings.postVisibility', '==', 'public')
+            .orderBy('videoUrl')
             .orderBy('createdAt', 'desc')
             .limit(50);
         return q.onSnapshot((snapshot) => {
@@ -463,6 +464,7 @@ export const firebaseService = {
     
                 const postData = postDoc.data() as Post;
                 const reactions = { ...(postData.reactions || {}) };
+                
                 const userPreviousReaction = reactions[userId];
     
                 if (userPreviousReaction === newReaction) {
@@ -642,12 +644,8 @@ export const firebaseService = {
 
     async blockUser(currentUserId: string, targetUserId: string): Promise<boolean> {
         const currentUserRef = db.collection('users').doc(currentUserId);
-        const targetUserRef = db.collection('users').doc(targetUserId);
         try {
-            await db.runTransaction(async (transaction) => {
-                transaction.update(currentUserRef, { blockedUserIds: arrayUnion(targetUserId) });
-                transaction.update(targetUserRef, { blockedUserIds: arrayUnion(currentUserId) });
-            });
+            await currentUserRef.update({ blockedUserIds: arrayUnion(targetUserId) });
             return true;
         } catch (error) {
             console.error("Failed to block user:", error);
@@ -657,12 +655,8 @@ export const firebaseService = {
 
     async unblockUser(currentUserId: string, targetUserId: string): Promise<boolean> {
         const currentUserRef = db.collection('users').doc(currentUserId);
-        const targetUserRef = db.collection('users').doc(targetUserId);
         try {
-            await db.runTransaction(async (transaction) => {
-                transaction.update(currentUserRef, { blockedUserIds: arrayRemove(targetUserId) });
-                transaction.update(targetUserRef, { blockedUserIds: arrayRemove(currentUserId) });
-            });
+            await currentUserRef.update({ blockedUserIds: arrayRemove(targetUserId) });
             return true;
         } catch (error) {
             console.error("Failed to unblock user:", error);
@@ -726,7 +720,7 @@ export const firebaseService = {
         });
     },
 
-    listenToRoom(roomId: string, type: 'audio' | 'video', callback: (room: LiveAudioRoom | LiveVideoRoom | null) => void) {
+    listenToRoom(roomId: string, type: 'audio' | 'video', callback: (room: any) => void) {
         const collectionName = type === 'audio' ? 'liveAudioRooms' : 'liveVideoRooms';
         return db.collection(collectionName).doc(roomId).onSnapshot((d) => {
             if (d.exists) {
@@ -736,7 +730,7 @@ export const firebaseService = {
                     ...data,
                     createdAt: data.createdAt instanceof firebase.firestore.Timestamp ? data.createdAt.toDate().toISOString() : new Date().toISOString()
                 };
-                callback(roomData as LiveAudioRoom | LiveVideoRoom);
+                callback(roomData);
             } else {
                 callback(null);
             }
@@ -768,10 +762,7 @@ export const firebaseService = {
     },
 
     // --- Stories ---
-    async createStory(
-        storyData: Omit<Story, 'id' | 'createdAt' | 'duration' | 'contentUrl' | 'viewedBy'>,
-        mediaFile: File | null
-    ): Promise<Story> {
+    async createStory(storyData: any, mediaFile: File | null): Promise<Story> {
         const storyToSave: any = {
             ...storyData,
             author: {
@@ -815,16 +806,11 @@ export const firebaseService = {
     // --- Group Member Management ---
     async promoteGroupMember(groupId: string, userToPromote: User, newRole: 'Admin' | 'Moderator'): Promise<boolean> {
         const groupRef = db.collection('groups').doc(groupId);
-        const fieldToUpdate = newRole === 'Admin' ? 'admins' : 'moderators';
+        const fieldToUpdate = newRole === 'Admin' ? 'adminIds' : 'moderatorIds';
         try {
-            const userRefOnly = { id: userToPromote.id, name: userToPromote.name, avatarUrl: userToPromote.avatarUrl, username: userToPromote.username };
-            await groupRef.update({
-                [fieldToUpdate]: arrayUnion(userRefOnly)
-            });
+            await groupRef.update({ [fieldToUpdate]: arrayUnion(userToPromote.id) });
             if (newRole === 'Admin') {
-                await groupRef.update({
-                    moderators: arrayRemove(userRefOnly)
-                });
+                await groupRef.update({ moderatorIds: arrayRemove(userToPromote.id) });
             }
             return true;
         } catch (error) {
@@ -835,12 +821,9 @@ export const firebaseService = {
 
     async demoteGroupMember(groupId: string, userToDemote: User, oldRole: 'Admin' | 'Moderator'): Promise<boolean> {
         const groupRef = db.collection('groups').doc(groupId);
-        const fieldToUpdate = oldRole === 'Admin' ? 'admins' : 'moderators';
+        const fieldToUpdate = oldRole === 'Admin' ? 'adminIds' : 'moderatorIds';
         try {
-            const userRefOnly = { id: userToDemote.id, name: userToDemote.name, avatarUrl: userToDemote.avatarUrl, username: userToDemote.username };
-            await groupRef.update({
-                [fieldToUpdate]: arrayRemove(userRefOnly)
-            });
+            await groupRef.update({ [fieldToUpdate]: arrayRemove(userToDemote.id) });
             return true;
         } catch (error) {
             console.error(`Failed to demote ${userToDemote.name}:`, error);
@@ -851,11 +834,10 @@ export const firebaseService = {
     async removeGroupMember(groupId: string, userToRemove: User): Promise<boolean> {
         const groupRef = db.collection('groups').doc(groupId);
         try {
-            const userRefOnly = { id: userToRemove.id, name: userToRemove.name, avatarUrl: userToRemove.avatarUrl, username: userToRemove.username };
             await groupRef.update({
-                members: arrayRemove(userRefOnly),
-                admins: arrayRemove(userRefOnly),
-                moderators: arrayRemove(userRefOnly),
+                memberIds: arrayRemove(userToRemove.id),
+                adminIds: arrayRemove(userToRemove.id),
+                moderatorIds: arrayRemove(userToRemove.id),
                 memberCount: increment(-1)
             });
             return true;
@@ -868,24 +850,11 @@ export const firebaseService = {
     // --- Group Request/Post Management ---
     async approveJoinRequest(groupId: string, userId: string): Promise<void> {
         const groupRef = db.collection('groups').doc(groupId);
-        const user = await this.getUserProfileById(userId);
-        if (!user) throw new Error("User to be approved not found.");
-
         try {
-            await db.runTransaction(async (transaction) => {
-                const groupDoc = await transaction.get(groupRef);
-                if (!groupDoc.exists) throw "Group does not exist!";
-                
-                const groupData = groupDoc.data() as Group;
-                
-                const requestToRemove = (groupData.joinRequests || []).find(req => req.user.id === userId);
-                const isAlreadyMember = groupData.members.some(m => m.id === userId);
-
-                transaction.update(groupRef, {
-                    joinRequests: requestToRemove ? arrayRemove(requestToRemove) : groupData.joinRequests,
-                    members: isAlreadyMember ? groupData.members : arrayUnion(user),
-                    memberCount: isAlreadyMember ? groupData.memberCount : increment(1)
-                });
+            await groupRef.update({
+                joinRequestIds: arrayRemove(userId),
+                memberIds: arrayUnion(userId),
+                memberCount: increment(1)
             });
         } catch (e) {
             console.error("Approve join request transaction failed:", e);
@@ -895,77 +864,18 @@ export const firebaseService = {
     async rejectJoinRequest(groupId: string, userId: string): Promise<void> {
         const groupRef = db.collection('groups').doc(groupId);
         try {
-            await db.runTransaction(async (transaction) => {
-                const groupDoc = await transaction.get(groupRef);
-                if (!groupDoc.exists) throw "Group does not exist!";
-                
-                const groupData = groupDoc.data() as Group;
-                const requestToRemove = (groupData.joinRequests || []).find(req => req.user.id === userId);
-
-                if (requestToRemove) {
-                    transaction.update(groupRef, {
-                        joinRequests: arrayRemove(requestToRemove)
-                    });
-                }
-            });
+            await groupRef.update({ joinRequestIds: arrayRemove(userId) });
         } catch (e) {
             console.error("Reject join request transaction failed:", e);
         }
     },
     
     async approvePost(postId: string): Promise<void> {
-        const postRef = db.collection('posts').doc(postId);
-        try {
-            const postDoc = await postRef.get();
-            if (!postDoc.exists) throw "Post does not exist!";
-            const postData = postDoc.data() as Post;
-            const groupId = postData.groupId;
-            if (!groupId) return;
-
-            const groupRef = db.collection('groups').doc(groupId);
-            const groupDoc = await groupRef.get();
-            if (groupDoc.exists) {
-                const groupData = groupDoc.data() as Group;
-                const postToRemove = (groupData.pendingPosts || []).find(p => p.id === postId);
-                if (postToRemove) {
-                    await groupRef.update({
-                        pendingPosts: arrayRemove(postToRemove)
-                    });
-                }
-            }
-            
-            await postRef.update({ status: 'approved' });
-        } catch (e) {
-            console.error("Approve post failed:", e);
-        }
+        await db.collection('posts').doc(postId).update({ status: 'approved' });
     },
 
     async rejectPost(postId: string): Promise<void> {
-        const postRef = db.collection('posts').doc(postId);
-        try {
-            const postDoc = await postRef.get();
-            if (!postDoc.exists) return;
-            const postData = postDoc.data() as Post;
-            const groupId = postData.groupId;
-
-            if (groupId) {
-                const groupRef = db.collection('groups').doc(groupId);
-                const groupDoc = await groupRef.get();
-                if (groupDoc.exists) {
-                    const groupData = groupDoc.data() as Group;
-                    const postToRemove = (groupData.pendingPosts || []).find(p => p.id === postId);
-                    if (postToRemove) {
-                        await groupRef.update({
-                            pendingPosts: arrayRemove(postToRemove)
-                        });
-                    }
-                }
-            }
-            
-            await postRef.delete();
-        } catch (e) {
-            console.error("Reject post failed:", e);
-        }
+        await db.collection('posts').doc(postId).delete();
     },
 
     // --- Admin Panel Functions ---
@@ -1041,29 +951,19 @@ export const firebaseService = {
     },
     
     async suspendUserCommenting(userId: string, days: number): Promise<boolean> {
+        const suspensionEndDate = new Date();
+        suspensionEndDate.setDate(suspensionEndDate.getDate() + days);
         try {
-            const suspensionEndDate = new Date();
-            suspensionEndDate.setDate(suspensionEndDate.getDate() + days);
-            await db.collection('users').doc(userId).update({
-                commentingSuspendedUntil: suspensionEndDate.toISOString()
-            });
+            await db.collection('users').doc(userId).update({ commentingSuspendedUntil: suspensionEndDate.toISOString() });
             return true;
-        } catch (e) {
-            console.error("Failed to suspend user commenting:", e);
-            return false;
-        }
+        } catch(e) { return false; }
     },
 
     async liftUserCommentingSuspension(userId: string): Promise<boolean> {
         try {
-            await db.collection('users').doc(userId).update({
-                commentingSuspendedUntil: null 
-            });
+            await db.collection('users').doc(userId).update({ commentingSuspendedUntil: null });
             return true;
-        } catch (e) {
-            console.error("Failed to lift user commenting suspension:", e);
-            return false;
-        }
+        } catch(e) { return false; }
     },
 
     async getPendingCampaigns(): Promise<Campaign[]> {
@@ -1087,14 +987,10 @@ export const firebaseService = {
     },
 
     async deletePostAsAdmin(postId: string): Promise<boolean> {
-        const postRef = db.collection('posts').doc(postId);
         try {
-            await postRef.delete();
+            await db.collection('posts').doc(postId).delete();
             return true;
-        } catch (error) {
-            console.error("Error deleting post as admin:", error);
-            return false;
-        }
+        } catch (error) { return false; }
     },
 
     async deleteCommentAsAdmin(commentId: string, postId: string): Promise<boolean> {
@@ -1178,12 +1074,10 @@ export const firebaseService = {
     },
 
     async suspendUserPosting(userId: string, days: number): Promise<boolean> {
+        const suspensionEndDate = new Date();
+        suspensionEndDate.setDate(suspensionEndDate.getDate() + days);
         try {
-            const suspensionEndDate = new Date();
-            suspensionEndDate.setDate(suspensionEndDate.getDate() + days);
-            await db.collection('users').doc(userId).update({
-                postingSuspendedUntil: suspensionEndDate.toISOString()
-            });
+            await db.collection('users').doc(userId).update({ postingSuspendedUntil: suspensionEndDate.toISOString() });
             return true;
         } catch (e) {
             console.error("Failed to suspend user posting:", e);
