@@ -1,9 +1,9 @@
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { Post, User, Comment, ScrollState } from '../types';
 import { PostCard } from './PostCard';
 import CommentCard from './CommentCard';
 import { geminiService } from '../services/geminiService';
+import { firebaseService } from '../services/firebaseService';
 import Icon from './Icon';
 import { getTtsPrompt } from '../constants';
 import { useSettings } from '../contexts/SettingsContext';
@@ -14,7 +14,7 @@ interface PostDetailScreenProps {
   currentUser: User;
   onSetTtsMessage: (message: string) => void;
   lastCommand: string | null;
-  onStartComment: (postId: string) => void;
+  onStartComment: (postId: string, parentId?: string) => void;
   onReactToPost: (postId: string, emoji: string) => void;
   onOpenProfile: (userName: string) => void;
   onSharePost: (post: Post) => void;
@@ -121,6 +121,20 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
         setPlayingCommentId(comment.id);
     }
   }, [playingCommentId]);
+
+  const handleReactToComment = async (commentId: string, emoji: string) => {
+    if (!post || !currentUser) return;
+    await firebaseService.reactToComment(post.id, commentId, currentUser.id, emoji);
+    const updatedPost = await fetchPostDetails();
+    if (updatedPost) {
+        setPost(updatedPost);
+    }
+  };
+
+  const handleReply = (comment: Comment) => {
+    if (!post) return;
+    onStartComment(post.id, comment.id);
+  };
   
   const handleMarkBestAnswer = async (commentId: string) => {
     if (!post) return;
@@ -180,6 +194,46 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
     }
   }, [lastCommand, handleCommand]);
 
+  const renderCommentTree = (allComments: Comment[], parentId?: string): React.ReactNode[] => {
+    return allComments
+      .filter(comment => comment.parentId === parentId)
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+      .map(comment => {
+        const isBestAnswer = post?.bestAnswerId === comment.id;
+        const canMarkBest = post?.postType === 'question' && post?.author.id === currentUser.id;
+        const isNew = comment.id === newlyAddedCommentId;
+        const replies = renderCommentTree(allComments, comment.id);
+
+        return (
+            <div key={comment.id}>
+                <div ref={isNew ? newCommentRef : null} className={`p-0.5 rounded-lg transition-all duration-500 ${isBestAnswer ? 'bg-gradient-to-br from-emerald-500 to-green-500' : ''} ${isNew ? 'ring-2 ring-rose-500' : ''}`}>
+                    <div className={`${isBestAnswer ? 'bg-slate-800 rounded-md' : ''}`}>
+                        <CommentCard
+                            comment={comment}
+                            currentUser={currentUser}
+                            isPlaying={playingCommentId === comment.id}
+                            onPlayPause={() => handlePlayComment(comment)}
+                            onAuthorClick={onOpenProfile}
+                            onReact={handleReactToComment}
+                            onReply={handleReply}
+                        />
+                        {canMarkBest && !isBestAnswer && (
+                            <button onClick={() => handleMarkBestAnswer(comment.id)} className="mt-2 ml-14 text-xs font-semibold text-emerald-400 hover:underline">
+                                Mark as best answer
+                            </button>
+                        )}
+                    </div>
+                </div>
+                {replies.length > 0 && (
+                    <div className="ml-5 mt-2 pl-4 border-l-2 border-slate-600 flex flex-col gap-3">
+                        {replies}
+                    </div>
+                )}
+            </div>
+        );
+      });
+  };
+
 
   if (isLoading) {
     return <div className="flex items-center justify-center h-full"><p className="text-slate-300 text-xl">Loading post...</p></div>;
@@ -201,7 +255,7 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
           onReact={onReactToPost}
           onViewPost={() => {}} // Already on the view
           onAuthorClick={onOpenProfile}
-          onStartComment={onStartComment}
+          onStartComment={(postId) => onStartComment(postId)}
           onSharePost={onSharePost}
         />
 
@@ -212,29 +266,7 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
                 <span>Add a Comment</span>
              </button>
              <div className="flex flex-col gap-3">
-                {post.comments.length > 0 ? [...post.comments].sort((a,b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()).map(comment => {
-                    const isBestAnswer = post.bestAnswerId === comment.id;
-                    const canMarkBest = post.postType === 'question' && post.author.id === currentUser.id;
-                    const isNew = comment.id === newlyAddedCommentId;
-
-                    return (
-                        <div key={comment.id} ref={isNew ? newCommentRef : null} className={`p-0.5 rounded-lg transition-all duration-500 ${isBestAnswer ? 'bg-gradient-to-br from-emerald-500 to-green-500' : ''} ${isNew ? 'ring-2 ring-rose-500' : ''}`}>
-                             <div className={`${isBestAnswer ? 'bg-slate-800 rounded-md' : ''}`}>
-                                <CommentCard 
-                                    comment={comment}
-                                    isPlaying={playingCommentId === comment.id}
-                                    onPlayPause={() => handlePlayComment(comment)}
-                                    onAuthorClick={onOpenProfile}
-                                />
-                                {canMarkBest && !isBestAnswer && (
-                                    <button onClick={() => handleMarkBestAnswer(comment.id)} className="mt-2 ml-14 text-xs font-semibold text-emerald-400 hover:underline">
-                                        Mark as best answer
-                                    </button>
-                                )}
-                            </div>
-                        </div>
-                    )
-                }) : (
+                {post.comments.length > 0 ? renderCommentTree(post.comments) : (
                     <p className="text-slate-400 text-center py-4">Be the first to comment.</p>
                 )}
              </div>
