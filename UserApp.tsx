@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { AppView, User, VoiceState, Post, Comment, ScrollState, Notification, Campaign, Group, Story } from './types';
 import AuthScreen from './components/AuthScreen';
@@ -75,7 +74,7 @@ const MobileMenuScreen: React.FC<{
     return (
         <div className="h-full w-full overflow-y-auto p-4 bg-slate-100 text-gray-800">
             <div className="max-w-md mx-auto">
-                <button 
+                <button
                     onClick={() => onNavigate(AppView.PROFILE, { username: currentUser.username })}
                     className="w-full flex items-center gap-4 p-4 mb-6 rounded-lg bg-white hover:bg-gray-50 transition-colors border border-gray-200"
                 >
@@ -87,36 +86,36 @@ const MobileMenuScreen: React.FC<{
                 </button>
 
                 <div className="space-y-2 bg-white p-2 rounded-lg border border-gray-200">
-                    <MenuItem 
-                        iconName="users" 
-                        label="Friends" 
+                    <MenuItem
+                        iconName="users"
+                        label="Friends"
                         onClick={() => onNavigate(AppView.FRIENDS)}
                         badge={friendRequestCount}
                     />
-                    <MenuItem 
-                        iconName="coin" 
-                        label="Voice Coins" 
+                    <MenuItem
+                        iconName="coin"
+                        label="Voice Coins"
                         onClick={() => {}}
                         badge={currentUser.voiceCoins || 0}
                     />
-                     <MenuItem 
-                        iconName="settings" 
-                        label="Settings" 
+                     <MenuItem
+                        iconName="settings"
+                        label="Settings"
                         onClick={() => onNavigate(AppView.SETTINGS)}
                     />
-                    <MenuItem 
-                        iconName="users-group-solid" 
-                        label="Groups" 
+                    <MenuItem
+                        iconName="users-group-solid"
+                        label="Groups"
                         onClick={() => onNavigate(AppView.GROUPS_HUB)}
                     />
-                    <MenuItem 
-                        iconName="briefcase" 
-                        label="Ads Center" 
+                    <MenuItem
+                        iconName="briefcase"
+                        label="Ads Center"
                         onClick={() => onNavigate(AppView.ADS_CENTER)}
                     />
-                    <MenuItem 
-                        iconName="chat-bubble-group" 
-                        label="Rooms" 
+                    <MenuItem
+                        iconName="chat-bubble-group"
+                        label="Rooms"
                         onClick={() => onNavigate(AppView.ROOMS_HUB)}
                     />
                 </div>
@@ -208,14 +207,20 @@ const UserApp: React.FC = () => {
             } else if (currentView?.view === AppView.AUTH) {
                 setViewStack([{ view: AppView.FEED }]);
             }
+            
+            // --- FINAL FIX FOR "e is not iterable" ERROR ---
+            // Ensure friendIds exists before calling the listener.
+            const friendIds = userProfile.friendIds || [];
 
             // Set up real-time listeners
             setIsLoadingFeed(true);
             setIsLoadingReels(true);
-            unsubscribePosts = firebaseService.listenToFeedPosts(userProfile.id, (feedPosts) => {
+
+            unsubscribePosts = firebaseService.listenToFeedPosts(userProfile.id, friendIds, (feedPosts) => {
                 setPosts(feedPosts);
                 setIsLoadingFeed(false);
             });
+            
             unsubscribeReelsPosts = firebaseService.listenToReelsPosts((newReelsPosts) => {
                 setReelsPosts(newReelsPosts);
                 setIsLoadingReels(false);
@@ -403,7 +408,6 @@ const UserApp: React.FC = () => {
             break;
         case 'group_join_request':
             if (notification.groupId) {
-                // This is for admins/mods. Navigate to the management screen.
                 navigate(AppView.MANAGE_GROUP, { groupId: notification.groupId, initialTab: 'requests' });
             }
             break;
@@ -442,7 +446,6 @@ const UserApp: React.FC = () => {
       const success = await geminiService.updateVoiceCoins(user.id, REWARD_AD_COIN_VALUE);
 
       if (success) {
-          // Manually update the user state to reflect the coin change immediately
           setUser(prevUser => {
               if (!prevUser) return null;
               return {
@@ -473,10 +476,8 @@ const UserApp: React.FC = () => {
   const handleAdClick = async (post: Post) => {
     if (!post.isSponsored || !post.campaignId) return;
 
-    // 1. Track the click
     await firebaseService.trackAdClick(post.campaignId);
     
-    // 2. Perform the action
     if (post.allowLeadForm) {
         setTtsMessage(getTtsPrompt('lead_form_opened', language));
         setLeadFormPost(post);
@@ -492,7 +493,6 @@ const UserApp: React.FC = () => {
             setTtsMessage(`Could not find sponsor ${post.sponsorName}.`);
         }
     } else if (post.sponsorId) {
-        // Fallback to profile view if sponsorId exists but other actions don't
         const sponsorUser = await firebaseService.getUserProfileById(post.sponsorId);
         if (sponsorUser) {
             setTtsMessage(`Opening profile for ${sponsorUser.name}.`);
@@ -534,8 +534,6 @@ const UserApp: React.FC = () => {
   
   const handlePostCreated = (newPost: Post | null) => {
     goBack();
-    // The listener will automatically update the posts state.
-    // We no longer need to manually add the post to the local state.
     setTtsMessage(getTtsPrompt('post_success', language));
   };
 
@@ -571,7 +569,6 @@ const UserApp: React.FC = () => {
         goBack();
         return;
     }
-    // Go back to the post detail screen, and pass the new comment ID to highlight it
     setViewStack(stack => [...stack.slice(0, -1), { view: AppView.POST_DETAILS, props: { postId, newlyAddedCommentId: newComment.id } }]);
     setTtsMessage(getTtsPrompt('comment_post_success', language));
   }
@@ -579,11 +576,7 @@ const UserApp: React.FC = () => {
   const handleReactToPost = async (postId: string, emoji: string) => {
     if (!user) return;
     const success = await firebaseService.reactToPost(postId, user.id, emoji);
-    if (success) {
-      // The real-time listener will update the UI, so no need for a TTS message here
-      // unless we want explicit feedback.
-      // setTtsMessage(`Reacted with ${emoji}`);
-    } else {
+    if (!success) {
       setTtsMessage(`Could not react. You may be offline.`);
     }
   }
@@ -604,7 +597,6 @@ const UserApp: React.FC = () => {
             console.log("Web Share API was cancelled or failed.", err);
         }
     } else {
-        // Fallback to a custom share modal for desktop browsers
         setShareModalPost(post);
         setTtsMessage("Share options are now open.");
     }
