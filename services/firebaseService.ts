@@ -310,6 +310,7 @@ export const firebaseService = {
         return users;
     },
 
+
     // --- Friends ---
     listenToFriends(userId: string, callback: (friends: User[]) => void) {
         const userRef = db.collection('users').doc(userId);
