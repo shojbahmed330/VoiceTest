@@ -11,7 +11,6 @@ import { DEFAULT_AVATARS, DEFAULT_COVER_PHOTOS, CLOUDINARY_CLOUD_NAME, CLOUDINAR
 
 const { serverTimestamp, increment, arrayUnion, arrayRemove, Timestamp } = firebase.firestore.FieldValue;
 
-
 // --- Helper Functions ---
 const docToUser = (doc: firebase.firestore.DocumentSnapshot): User => {
     const data = doc.data();
@@ -104,7 +103,6 @@ const matchesTargeting = (campaign: Campaign, user: User): boolean => {
     return true;
 };
 
-
 // --- Service Definition ---
 export const firebaseService = {
     // --- Authentication ---
@@ -113,10 +111,9 @@ export const firebaseService = {
             if (firebaseUser) {
                 try {
                     const userProfile = await firebaseService.getUserProfileById(firebaseUser.uid);
-                    if (userProfile && !userProfile.isDeactivated && !userProfile.isBanned) { // Check for deactivation and ban
+                    if (userProfile && !userProfile.isDeactivated && !userProfile.isBanned) {
                         callback(userProfile);
                     } else {
-                        // If user is deactivated/banned or profile doesn't exist, sign them out.
                         if(userProfile?.isDeactivated) {
                             console.log(`User ${firebaseUser.uid} is deactivated. Signing out.`);
                         }
@@ -310,7 +307,6 @@ export const firebaseService = {
         return users;
     },
 
-
     // --- Friends ---
     listenToFriends(userId: string, callback: (friends: User[]) => void) {
         const userRef = db.collection('users').doc(userId);
@@ -335,22 +331,16 @@ export const firebaseService = {
     },
 
     // --- Posts ---
-    // --- সমাধান করা হয়েছে (PERMISSION & ITERABLE ERROR) ---
     listenToFeedPosts(currentUserId: string, friendIds: string[], callback: (posts: Post[]) => void) {
-        // This handles the "e is not iterable" error by ensuring friendIds is an array.
         const authorsToFetch = [currentUserId, ...(friendIds || [])];
 
-        // Firestore 'in' query fails with an empty array.
         if (authorsToFetch.length === 0) {
             callback([]);
-            return () => {}; // Return an empty unsubscribe function
+            return () => {};
         }
         
-        // This query securely fetches posts authored by the user OR their friends, matching security rules.
-        // Firestore 'in' query is limited to 10 items. For a production app with many friends,
-        // you would need to split `authorsToFetch` into chunks of 10 and run multiple queries.
         const q = db.collection('posts')
-            .where('author.id', 'in', authorsToFetch.slice(0, 10)) // Using slice to stay within limit
+            .where('author.id', 'in', authorsToFetch.slice(0, 10))
             .orderBy('createdAt', 'desc')
             .limit(50);
             
@@ -373,9 +363,7 @@ export const firebaseService = {
         });
     },
 
-    // --- সমাধান করা হয়েছে (PERMISSION ERROR) ---
     listenToReelsPosts(callback: (posts: Post[]) => void) {
-        // This query is now secure because it only asks for public posts.
         const q = db.collection('posts')
             .where('videoUrl', '!=', null)
             .where('author.privacySettings.postVisibility', '==', 'public')
