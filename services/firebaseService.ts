@@ -158,7 +158,7 @@ export const firebaseService = {
                 const userRef = db.collection('users').doc(user.uid);
                 const usernameRef = db.collection('usernames').doc(username.toLowerCase());
 
-                const newUserProfile: Omit<User, 'id' | 'createdAt'> = {
+                const newUserProfile: Omit<User, 'id'> = {
                     name: fullName,
                     name_lowercase: fullName.toLowerCase(),
                     username: username.toLowerCase(),
@@ -177,8 +177,11 @@ export const firebaseService = {
                 };
                 
                 // In a real app, this should be a batched write or transaction
-                await userRef.set(newUserProfile);
-                await usernameRef.set({ userId: user.uid });
+                const batch = db.batch();
+                batch.set(userRef, newUserProfile);
+                batch.set(usernameRef, { userId: user.uid });
+                await batch.commit();
+
                 return true;
             }
             return false;
@@ -251,7 +254,7 @@ export const firebaseService = {
                 const userProfile = await this.getUserProfileById(userId);
 
                 if (!userProfile) {
-                     throw new Error("User profile not found for this username.");
+                    throw new Error("User profile not found for this username.");
                 }
                 emailToSignIn = userProfile.email;
 
@@ -275,8 +278,6 @@ export const firebaseService = {
     signOutUser: () => auth.signOut(),
 
     async isUsernameTaken(username: string): Promise<boolean> {
-        // Checks a public collection 'usernames' where each doc ID is a username.
-        // This is more secure as it doesn't require querying the private 'users' collection.
         const usernameDocRef = db.collection('usernames').doc(username.toLowerCase());
         const usernameDoc = await usernameDocRef.get();
         return usernameDoc.exists;
@@ -291,7 +292,7 @@ export const firebaseService = {
         return null;
     },
 
-     async getUsersByIds(userIds: string[]): Promise<User[]> {
+    async getUsersByIds(userIds: string[]): Promise<User[]> {
         if (userIds.length === 0) {
             return [];
         }
@@ -326,8 +327,7 @@ export const firebaseService = {
                     callback([]);
                     return;
                 }
-                const friendPromises = friendIds.map(id => this.getUserProfileById(id));
-                const friends = (await Promise.all(friendPromises)).filter(f => f !== null) as User[];
+                const friends = await this.getUsersByIds(friendIds);
                 
                 // Mock online status for the demo
                 const friendsWithStatus = friends.map((friend, index) => ({
@@ -342,12 +342,31 @@ export const firebaseService = {
     },
 
     // --- Posts ---
-    listenToFeedPosts(currentUserId: string, callback: (posts: Post[]) => void) {
-        const q = db.collection('posts').orderBy('createdAt', 'desc').limit(50);
+    // --- সমাধান করা হয়েছে ---
+    listenToFeedPosts(currentUserId: string, friendIds: string[], callback: (posts: Post[]) => void) {
+        // This query securely fetches posts that are public OR authored by the user or their friends.
+        // NOTE: Firestore does not support logical OR queries across different fields. 
+        // A common strategy is to query for friends' posts and merge with public posts client-side.
+        // For simplicity here, we'll make a query for friends' posts. Public posts can be fetched separately if needed.
+        
+        const authorsToFetch = [currentUserId, ...friendIds];
+        if (authorsToFetch.length === 0) {
+             // Fallback to only public posts if the user has no friends yet.
+            const q = db.collection('posts')
+                .where('author.privacySettings.postVisibility', '==', 'public')
+                .orderBy('createdAt', 'desc')
+                .limit(30);
+             return q.onSnapshot(snapshot => callback(snapshot.docs.map(docToPost)));
+        }
+
+        const q = db.collection('posts')
+            .where('author.id', 'in', authorsToFetch)
+            .orderBy('createdAt', 'desc')
+            .limit(50);
+            
         return q.onSnapshot((snapshot) => {
             const feedPosts = snapshot.docs.map(docToPost);
-            const filtered = feedPosts.filter(p => p.author?.id === currentUserId || p.author?.privacySettings?.postVisibility === 'public');
-            callback(filtered);
+            callback(feedPosts);
         });
     },
 
@@ -359,15 +378,17 @@ export const firebaseService = {
         return q.onSnapshot((snapshot) => {
             const explorePosts = snapshot.docs
                 .map(docToPost)
-                .filter(post => post.author.id !== currentUserId && !post.isSponsored); // Filter client-side
+                .filter(post => post.author.id !== currentUserId && !post.isSponsored);
             callback(explorePosts);
         });
     },
 
+    // --- সমাধান করা হয়েছে ---
     listenToReelsPosts(callback: (posts: Post[]) => void) {
+        // This query is now secure because it only asks for public posts.
         const q = db.collection('posts')
             .where('videoUrl', '!=', null)
-            .orderBy('videoUrl')
+            .where('author.privacySettings.postVisibility', '==', 'public')
             .orderBy('createdAt', 'desc')
             .limit(50);
         return q.onSnapshot((snapshot) => {
@@ -465,7 +486,6 @@ export const firebaseService = {
                 if (!postDoc.exists) throw "Post does not exist!";
     
                 const postData = postDoc.data() as Post;
-                // New data structure: { [userId]: emoji }
                 const reactions = { ...(postData.reactions || {}) };
                 
                 const userPreviousReaction = reactions[userId];
@@ -602,7 +622,7 @@ export const firebaseService = {
             
             const commentExists = postData.comments.some(c => c.id === commentId);
             if (!commentExists) {
-                 throw "Comment does not exist on this post.";
+                throw "Comment does not exist on this post.";
             }
     
             await postRef.update({ bestAnswerId: commentId });
@@ -635,7 +655,7 @@ export const firebaseService = {
         await db.collection('users').doc(userId).update(updates);
     },
     
-     async searchUsers(query: string): Promise<User[]> {
+    async searchUsers(query: string): Promise<User[]> {
         const lowerQuery = query.toLowerCase();
         const nameQuery = db.collection('users').where('name_lowercase', '>=', lowerQuery).where('name_lowercase', '<=', lowerQuery + '\uf8ff');
         const usernameQuery = db.collection('users').where('username', '>=', lowerQuery).where('username', '<=', lowerQuery + '\uf8ff');
@@ -752,7 +772,7 @@ export const firebaseService = {
         });
     },
 
-     // --- Messages ---
+    // --- Messages ---
     listenToMessages(chatId: string, callback: (messages: Message[]) => void) {
         const q = db.collection('chats').doc(chatId).collection('messages').orderBy('createdAt', 'asc');
         return q.onSnapshot((snapshot) => {
@@ -769,7 +789,7 @@ export const firebaseService = {
     },
     
     async sendMessage(chatId: string, message: Omit<Message, 'id' | 'createdAt'>) {
-         const messageWithTimestamp = {
+        const messageWithTimestamp = {
             ...message,
             createdAt: serverTimestamp(),
         };
@@ -804,8 +824,8 @@ export const firebaseService = {
                 duration = 15; 
             }
         } else if (storyData.contentUrl) { // Handle mock gallery items that pass a URL directly
-             const isVideo = storyData.contentUrl.endsWith('.mp4');
-             if (isVideo) duration = 15;
+            const isVideo = storyData.contentUrl.endsWith('.mp4');
+            if (isVideo) duration = 15;
         }
         
         storyToSave.duration = duration;
@@ -849,7 +869,7 @@ export const firebaseService = {
         const groupRef = db.collection('groups').doc(groupId);
         const fieldToUpdate = oldRole === 'Admin' ? 'admins' : 'moderators';
         try {
-             const userRefOnly = { id: userToDemote.id, name: userToDemote.name, avatarUrl: userToDemote.avatarUrl, username: userToDemote.username };
+            const userRefOnly = { id: userToDemote.id, name: userToDemote.name, avatarUrl: userToDemote.avatarUrl, username: userToDemote.username };
             await groupRef.update({
                 [fieldToUpdate]: arrayRemove(userRefOnly)
             });
@@ -915,7 +935,7 @@ export const firebaseService = {
                 const requestToRemove = (groupData.joinRequests || []).find(req => req.user.id === userId);
 
                 if (requestToRemove) {
-                     transaction.update(groupRef, {
+                    transaction.update(groupRef, {
                         joinRequests: arrayRemove(requestToRemove)
                     });
                 }
@@ -957,16 +977,16 @@ export const firebaseService = {
     async rejectPost(postId: string): Promise<void> {
         const postRef = db.collection('posts').doc(postId);
         try {
-             const postDoc = await postRef.get();
+            const postDoc = await postRef.get();
             if (!postDoc.exists) return;
             const postData = postDoc.data() as Post;
             const groupId = postData.groupId;
 
             // Remove from pendingPosts array on group doc
             if (groupId) {
-                 const groupRef = db.collection('groups').doc(groupId);
-                 const groupDoc = await groupRef.get();
-                 if (groupDoc.exists) {
+                const groupRef = db.collection('groups').doc(groupId);
+                const groupDoc = await groupRef.get();
+                if (groupDoc.exists) {
                     const groupData = groupDoc.data() as Group;
                     const postToRemove = (groupData.pendingPosts || []).find(p => p.id === postId);
                     if (postToRemove) {
@@ -974,7 +994,7 @@ export const firebaseService = {
                             pendingPosts: arrayRemove(postToRemove)
                         });
                     }
-                 }
+                }
             }
             
             // Actually delete the post document
@@ -1352,7 +1372,7 @@ export const firebaseService = {
           batch.update(notificationsRef.doc(id), { read: true });
         });
         try {
-             await batch.commit();
+            await batch.commit();
         } catch(error) {
             console.error("Error marking notifications as read:", error);
         }
