@@ -7,6 +7,7 @@ import { firebaseService } from '../services/firebaseService';
 import Icon from './Icon';
 import { getTtsPrompt } from '../constants';
 import { useSettings } from '../contexts/SettingsContext';
+import { db } from '../services/firebaseConfig'; // <-- db import করুন
 
 interface PostDetailScreenProps {
   postId: string;
@@ -31,64 +32,43 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
   const newCommentRef = useRef<HTMLDivElement>(null);
   const { language } = useSettings();
 
-
-  const fetchPostDetails = useCallback(async () => {
-      return await geminiService.getPostById(postId);
-  }, [postId]);
-
-  // Effect for initial fetching and handling newly added comments
+  // --- সমাধান: Polling এর পরিবর্তে onSnapshot ব্যবহার ---
   useEffect(() => {
-    let isMounted = true;
+    setIsLoading(true);
+    const postRef = db.collection('posts').doc(postId);
     
-    const initialFetch = async () => {
-      setIsLoading(true);
-      const fetchedPost = await fetchPostDetails();
-      if (!isMounted || !fetchedPost) {
-          setIsLoading(false);
-          // Handle post not found case
-          return;
-      }
-
-      setPost(fetchedPost);
-      setIsLoading(false);
-      onSetTtsMessage(getTtsPrompt('post_details_loaded', language));
-
-      if (newlyAddedCommentId) {
-        const newComment = fetchedPost.comments.find(c => c.id === newlyAddedCommentId);
-        if (newComment && newComment.type === 'audio') {
-            setPlayingCommentId(newlyAddedCommentId);
+    const unsubscribe = postRef.onSnapshot(
+      (doc) => {
+        if (doc.exists) {
+          const fetchedPost = docToPost(doc); // Using the helper to format data
+          setPost(fetchedPost);
+          if (isLoading) { // Only show TTS on initial load
+             onSetTtsMessage(getTtsPrompt('post_details_loaded', language));
+          }
+        } else {
+          setPost(null);
+          onSetTtsMessage("This post could not be found. It may have been deleted.");
         }
+        setIsLoading(false);
+      },
+      (error) => {
+        console.error("Error listening to post details:", error);
+        setIsLoading(false);
+        onSetTtsMessage("Failed to load post details.");
+      }
+    );
+
+    // Highlight new comment if any
+    if (newlyAddedCommentId) {
         setTimeout(() => {
             newCommentRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }, 500);
-      }
-    };
-    
-    initialFetch();
-
-    return () => {
-        isMounted = false;
     }
-  }, [postId, newlyAddedCommentId, fetchPostDetails, onSetTtsMessage, language]);
 
-  // Effect for polling for new comments
-  useEffect(() => {
-    const commentInterval = setInterval(async () => {
-        const freshPost = await geminiService.getPostById(postId);
-        setPost(currentPost => {
-            if (freshPost && currentPost && freshPost.commentCount > currentPost.commentCount) {
-                return freshPost;
-            }
-            return currentPost;
-        });
-    }, 5000);
-
-    return () => {
-        clearInterval(commentInterval);
-    }
-  }, [postId]);
-
-
+    return () => unsubscribe(); // Cleanup the listener on component unmount
+  }, [postId, newlyAddedCommentId, onSetTtsMessage, language]);
+  
+  
   useEffect(() => {
     const scrollContainer = scrollContainerRef.current;
     if (!scrollContainer || scrollState === 'none') {
@@ -104,7 +84,7 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
         }
         animationFrameId = requestAnimationFrame(animateScroll);
     };
-
+    
     animationFrameId = requestAnimationFrame(animateScroll);
 
     return () => {
@@ -122,13 +102,11 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
     }
   }, [playingCommentId]);
 
+  // --- সমাধান: handleReactToComment এখন আর ডেটা fetch করে না ---
   const handleReactToComment = async (commentId: string, emoji: string) => {
     if (!post || !currentUser) return;
+    // Just update the database. The onSnapshot listener will handle the UI update.
     await firebaseService.reactToComment(post.id, commentId, currentUser.id, emoji);
-    const updatedPost = await fetchPostDetails();
-    if (updatedPost) {
-        setPost(updatedPost);
-    }
   };
 
   const handleReply = (comment: Comment) => {
@@ -138,11 +116,9 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
   
   const handleMarkBestAnswer = async (commentId: string) => {
     if (!post) return;
-    const updatedPost = await geminiService.markBestAnswer(currentUser.id, post.id, commentId);
-    if (updatedPost) {
-        setPost(updatedPost);
-        onSetTtsMessage("Best answer marked!");
-    }
+    // The listener will update the UI automatically after this.
+    await geminiService.markBestAnswer(currentUser.id, post.id, commentId);
+    onSetTtsMessage("Best answer marked!");
   };
 
   const handleCommand = useCallback(async (command: string) => {
@@ -275,5 +251,19 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
     </div>
   );
 };
+
+// Helper function to format post data
+const docToPost = (doc: any): Post => {
+    const data = doc.data() || {};
+    return {
+        ...data,
+        id: doc.id,
+        createdAt: data.createdAt instanceof firebase.firestore.Timestamp ? data.createdAt.toDate().toISOString() : new Date().toISOString(),
+        reactions: data.reactions || {},
+        comments: data.comments || [],
+        commentCount: data.commentCount || 0,
+    } as Post;
+}
+
 
 export default PostDetailScreen;
