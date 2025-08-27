@@ -1,0 +1,318 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // --- Global Helper Functions ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isUser(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      // Check if the user document exists and has the role 'admin'.
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+                         && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    function isFriend(userId) {
+      // Check if the currently authenticated user is in the friend list of the target userId.
+      // This assumes the user's document has a 'friendIds' array.
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(userId))
+                         && request.auth.uid in get(/databases/$(database)/documents/users/$(userId)).data.friendIds;
+    }
+
+
+    // users collection
+    match /users/{userId} {
+      allow get, list: if isSignedIn();
+
+      allow create: if isUser(userId)
+                    && !exists(/databases/$(database)/documents/usernames/$(request.resource.data.username))
+                    && request.resource.data.role == 'user'
+                    && request.resource.data.isBanned == false
+                    && request.resource.data.voiceCoins == 100
+                    && request.resource.data.email == request.auth.token.email
+                    && request.resource.data.createdAt == request.time;
+
+      allow update: if (isUser(userId)
+                    && request.resource.data.role == resource.data.role
+                    && request.resource.data.voiceCoins == resource.data.voiceCoins
+                    && request.resource.data.isBanned == resource.data.isBanned
+                    && request.resource.data.email == resource.data.email
+                    && request.resource.data.createdAt == resource.data.createdAt)
+                  || isAdmin();
+
+      allow delete: if false;
+
+      // --- notifications sub-collection ---
+      match /notifications/{notificationId} {
+        // READ: A user can only read their own notifications.
+        allow get, list: if isUser(userId);
+
+        // CREATE: Highly restricted. Client-side creation of notifications for other
+        // users is insecure. This should be handled by Cloud Functions.
+        // We only allow admins to create them (for warnings/announcements).
+        allow create: if isAdmin();
+
+        // UPDATE: A user can only update their own notifications to mark them as read.
+        allow update: if isUser(userId)
+                      && request.resource.data.read == true
+                      && resource.data.read == false
+                      && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+
+        // DELETE: A user can delete their own notifications.
+        allow delete: if isUser(userId);
+      }
+    }
+
+    // posts collection
+    match /posts/{postId} {
+      function isPostAuthor() {
+        return request.auth.uid == resource.data.author.id;
+      }
+
+      // READ: A post is readable if it's public, or if the user is a friend of the author, or the author themselves, or an admin.
+      allow get, list: if isSignedIn() &&
+                        (resource.data.author.privacySettings.postVisibility == 'public' ||
+                         isPostAuthor() ||
+                         isFriend(resource.data.author.id) ||
+                         isAdmin() ||
+                         resource.data.isSponsored == true);
+
+      // CREATE: Any signed-in user can create a post.
+      allow create: if isSignedIn()
+                    // The author must be the current user.
+                    && request.resource.data.author.id == request.auth.uid
+                    // Validate required fields.
+                    && 'name' in request.resource.data.author
+                    && 'username' in request.resource.data.author
+                    && request.resource.data.createdAt == request.time
+                    // Users cannot create sponsored posts directly.
+                    && request.resource.data.isSponsored == false
+                    // Initial values must be correct.
+                    && request.resource.data.commentCount == 0
+                    && request.resource.data.reactions.size() == 0;
+
+      // UPDATE: More complex logic for updates.
+      allow update: if isSignedIn() && (
+                      // Case 1: Author is editing their own post (e.g., caption).
+                      (isPostAuthor() && request.resource.data.author.id == resource.data.author.id) ||
+                      // Case 2: Any user reacting to a post.
+                      (request.resource.data.keys().hasOnly(['reactions']) && request.resource.data.reactions.diff(resource.data.reactions).affectedKeys().hasOnly([request.auth.uid])) ||
+                      // Case 3: Any user adding a new comment/reply.
+                      (request.resource.data.keys().hasAll(['comments', 'commentCount']) && request.resource.data.commentCount == resource.data.commentCount + 1) ||
+                      // Case 4: Any user reacting to a comment. (This allows updating a comment's reactions).
+                      (request.resource.data.keys().hasOnly(['comments']) && request.resource.data.comments.size() == resource.data.comments.size()) ||
+                      // Case 5: Author marking a best answer.
+                      (isPostAuthor() && request.resource.data.bestAnswerId != resource.data.bestAnswerId) ||
+                      // Case 6: Any user voting on a poll, but only once.
+                      (request.resource.data.poll.options.size() == resource.data.poll.options.size() &&
+                       !request.auth.uid in resource.data.poll.options[request.resource.data.poll.options.keys()[0]].votedBy) || // Simplified check
+                      // Case 7: Admin approving a post for a group.
+                      (isAdmin() && request.resource.data.status == 'approved' && resource.data.status == 'pending')
+                    );
+
+
+      // DELETE: Only the author or an admin can delete a post.
+      allow delete: if isSignedIn() && (isPostAuthor() || isAdmin());
+    }
+
+    // chats/{chatId}/messages/{messageId}
+    // Rules for one-on-one conversations.
+    match /chats/{chatId} {
+      // Helper to check if the user is part of this chat.
+      // Assumes the chat document has a 'participants' array field with UIDs.
+      function isChatParticipant() {
+        return request.auth.uid in resource.data.participants;
+      }
+
+      // READ/WRITE on chat metadata (e.g., theme, settings)
+      allow get, update: if isChatParticipant();
+      // Listing chats or creating new ones might need different rules if implemented.
+      allow list, create, delete: if false;
+
+      // Rules for the messages sub-collection
+      match /messages/{messageId} {
+        // READ: Only participants can read messages.
+        allow get, list: if isChatParticipant();
+
+        // CREATE: A participant can send a message.
+        allow create: if isChatParticipant()
+                      // The sender must be the currently authenticated user.
+                      && request.resource.data.senderId == request.auth.uid
+                      && request.resource.data.createdAt == request.time;
+
+        // UPDATE/DELETE: Disallowed for now to prevent message tampering.
+        allow update, delete: if false;
+      }
+    }
+
+    // groups collection
+    match /groups/{groupId} {
+      // --- IMPORTANT SECURITY NOTE ---
+      // The current data structure stores arrays of objects (e.g., 'members', 'admins').
+      // It is NOT possible in Firestore Security Rules to efficiently check if a user's ID
+      // exists in an array of objects (e.g., 'members.map(m => m.id).includes(uid)').
+      // For these rules to be secure and performant, the 'groups' documents MUST be updated to include
+      // parallel arrays of IDs, like 'memberIds', 'adminIds', and 'moderatorIds'.
+      // The following rules are written assuming this improved data structure exists.
+
+      // Helper functions assuming the recommended data structure
+      function isGroupMember() {
+        return request.auth.uid in resource.data.memberIds;
+      }
+      function isGroupAdmin() {
+        return request.auth.uid in resource.data.adminIds;
+      }
+      function isGroupModerator() {
+        return request.auth.uid in resource.data.moderatorIds;
+      }
+      function isGroupAdminOrMod() {
+        return isGroupAdmin() || isGroupModerator();
+      }
+
+      // READ: Public groups are readable by anyone signed in. Private groups only by members.
+      allow get, list: if isSignedIn() && (resource.data.privacy == 'public' || isGroupMember() || isAdmin());
+
+      // CREATE: Any signed-in user can create a group.
+      allow create: if isSignedIn()
+                    // Creator must be the user making the request.
+                    && request.resource.data.creator.id == request.auth.uid
+                    // On creation, the user becomes the first member and admin.
+                    && request.resource.data.memberIds[0] == request.auth.uid
+                    && request.resource.data.adminIds[0] == request.auth.uid
+                    && request.resource.data.memberCount == 1;
+
+      // UPDATE: Permissions depend on the user's role within the group.
+      allow update: if isSignedIn() && (
+                      // Case 1: Admin updating group info (description, cover photo, etc.)
+                      isGroupAdmin() ||
+                      // Case 2: Admin or Mod approving join requests or managing pending posts.
+                      isGroupAdminOrMod() ||
+                      // Case 3: A user joining a public group that doesn't require approval.
+                      (resource.data.privacy == 'public' && resource.data.requiresApproval == false)
+                    );
+
+      // DELETE: Only the original creator or a system admin can delete a group.
+      allow delete: if request.auth.uid == resource.data.creator.id || isAdmin();
+    }
+
+    // campaigns collection
+    match /campaigns/{campaignId} {
+      // READ: Admins can read any campaign. Sponsors can read their own.
+      // Any signed-in user can read active campaigns to be shown as ads.
+      allow get, list: if isSignedIn() &&
+                        (isAdmin() ||
+                         request.auth.uid == resource.data.sponsorId ||
+                         resource.data.status == 'active');
+
+      // CREATE: A signed-in user can submit a campaign for approval.
+      allow create: if isSignedIn()
+                    && request.resource.data.sponsorId == request.auth.uid
+                    && request.resource.data.status == 'pending'
+                    && request.resource.data.views == 0
+                    && request.resource.data.clicks == 0;
+
+      // UPDATE: Admins can manage campaigns. Users can increment view/click counts (ideally this should be server-side).
+      allow update: if isSignedIn() &&
+                      (isAdmin() || // Admins have full update power
+                      // The following allows client-side tracking of views/clicks.
+                      // This is not perfectly secure but matches the app's current logic.
+                      (request.resource.data.views == resource.data.views + 1) ||
+                      (request.resource.data.clicks == resource.data.clicks + 1));
+
+      allow delete: if false; // Deletion should be handled by changing status.
+    }
+
+    // reports collection
+    match /reports/{reportId} {
+      // READ: Only admins can read reports.
+      allow get, list: if isAdmin();
+
+      // CREATE: Any signed-in user can create a report.
+      allow create: if isSignedIn()
+                    && request.resource.data.reporterId == request.auth.uid
+                    && request.resource.data.status == 'pending';
+
+      // UPDATE: Only admins can resolve a report.
+      allow update: if isAdmin();
+
+      allow delete: if false;
+    }
+
+    // leads collection
+    match /leads/{leadId} {
+      // READ: Only the campaign sponsor or an admin can read the leads.
+      allow get, list: if isSignedIn() &&
+                        (isAdmin() ||
+                         request.auth.uid == get(/databases/$(database)/documents/campaigns/$(resource.data.campaignId)).data.sponsorId);
+
+      // CREATE: Anyone can submit a lead form.
+      allow create: if request.resource.data.keys().hasAll(['campaignId', 'sponsorId', 'userName', 'userEmail'])
+                     && request.resource.data.campaignId is string
+                     && request.resource.data.userName is string;
+
+      allow update, delete: if false;
+    }
+
+    // stories collection
+    match /stories/{storyId} {
+      function isStoryAuthor() {
+        return request.auth.uid == resource.data.author.id;
+      }
+
+      // READ: Public stories, or stories from friends, or own stories.
+      allow get, list: if isSignedIn() &&
+                        (resource.data.privacy == 'public' ||
+                         isFriend(resource.data.author.id) ||
+                         isStoryAuthor() ||
+                         isAdmin());
+
+      // CREATE: Signed-in users can create a story.
+      allow create: if isSignedIn()
+                    && request.resource.data.author.id == request.auth.uid
+                    && request.resource.data.createdAt == request.time
+                    && request.resource.data.isSponsored == false
+                    && request.resource.data.viewedBy.size() == 0;
+
+      // UPDATE: A user can only add themselves to the 'viewedBy' list.
+      allow update: if isSignedIn()
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewedBy'])
+                    && request.resource.data.viewedBy.toSet().hasAll(resource.data.viewedBy.toSet())
+                    && request.resource.data.viewedBy.size() == resource.data.viewedBy.size() + 1
+                    && request.auth.uid in request.resource.data.viewedBy;
+
+      // DELETE: Only the author can delete their story.
+      allow delete: if isStoryAuthor();
+    }
+
+    // liveAudioRooms and liveVideoRooms collections
+    match /liveAudioRooms/{roomId} {
+      allow get, list: if isSignedIn() && resource.data.status == 'live';
+      allow create: if isSignedIn() && request.resource.data.host.id == request.auth.uid;
+      allow update, delete: if request.auth.uid == resource.data.host.id || isAdmin();
+    }
+    match /liveVideoRooms/{roomId} {
+      allow get, list: if isSignedIn() && resource.data.status == 'live';
+      allow create: if isSignedIn() && request.resource.data.host.id == request.auth.uid;
+      allow update, delete: if request.auth.uid == resource.data.host.id || isAdmin();
+    }
+
+    // usernames collection
+    // This collection ensures usernames are unique and provides a way to look up a user by their username.
+    match /usernames/{username} {
+      // READ: Anyone can check if a username exists.
+      allow get: if true;
+
+      // CREATE: Only a user creating their own profile can create a corresponding username document.
+      // This should happen in a transaction with user creation.
+      allow create: if isSignedIn()
+                    && request.resource.data.userId == request.auth.uid;
+
+      // UPDATE, DELETE: Not allowed to prevent tampering.
+      allow update, delete: if false;
+    }
+  }
+}
