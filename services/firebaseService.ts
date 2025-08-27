@@ -1,17 +1,3 @@
-আপনার নতুন এররটি একটি Invalid Query এরর, যা ফায়ারস্টোরের ডেটা কোয়েরি করার নিয়মের কারণে হচ্ছে। এটি কোনো পারমিশন বা সিকিউরিটি রুলসের সমস্যা নয়।
-
-সমস্যার কারণ:
-আপনার services/firebaseService.ts ফাইলের listenToReelsPosts ফাংশনে আপনি videoUrl ফিল্ডের উপর একটি অসমতা (!= null) ফিল্টার ব্যবহার করেছেন। ফায়ারস্টোরের নিয়ম অনুযায়ী, যখন আপনি কোনো ফিল্ডের উপর অসমতা ফিল্টার ব্যবহার করবেন, তখন আপনাকে অবশ্যই সেই একই ফিল্ডের উপর orderBy দিয়ে কোয়েরি শুরু করতে হবে।
-
-আপনার কোডে orderBy করা হচ্ছিল createdAt দিয়ে, যা এই এররের কারণ।
-
-✅ চূড়ান্ত সমাধান: firebaseService.ts ফাইলটি আপডেট করুন
-
-নিচে আপনার সম্পূর্ণ এবং সর্বশেষ সংশোধিত services/firebaseService.ts ফাইলটি দেওয়া হলো। আমি শুধুমাত্র listenToReelsPosts ফাংশনটি ঠিক করে দিয়েছি।
-
-এই সম্পূর্ণ কোডটি কপি করে আপনার প্রজেক্টের services/firebaseService.ts ফাইলে পেস্ট করে দিন। এটি আপনার নতুন এররটি সমাধান করবে।
-TypeScript
-
 // @ts-nocheck
 import firebase from 'firebase/compat/app';
 import 'firebase/compat/auth';
