@@ -614,12 +614,12 @@ const UserApp: React.FC = () => {
   const handleOpenProfile = (username: string) => navigate(AppView.PROFILE, { username });
   const handleViewPost = (postId: string) => navigate(AppView.POST_DETAILS, { postId });
   const handleEditProfile = () => navigate(AppView.SETTINGS, { ttsMessage: getTtsPrompt('settings_opened', language) });
-  const handleStartComment = (postId: string) => {
+  const handleStartComment = (postId: string, parentId?: string) => {
     if(user?.commentingSuspendedUntil && new Date(user.commentingSuspendedUntil) > new Date()) {
         setTtsMessage(getTtsPrompt('comment_suspended', language));
         return;
     }
-    navigate(AppView.CREATE_COMMENT, { postId });
+    navigate(AppView.CREATE_COMMENT, { postId, parentId });
   }
   const handleOpenConversation = async (peer: User) => {
     if (!user) return;
@@ -738,7 +738,7 @@ const UserApp: React.FC = () => {
       case AppView.CREATE_REEL:
         return <CreateReelScreen {...commonScreenProps} onReelCreated={handleReelCreated} />;
       case AppView.CREATE_COMMENT:
-        return <CreateCommentScreen {...commonScreenProps} user={user!} postId={currentView.props.postId} onCommentPosted={handleCommentPosted} />;
+        return <CreateCommentScreen {...commonScreenProps} user={user!} postId={currentView.props.postId} parentId={currentView.props.parentId} onCommentPosted={handleCommentPosted} />;
       case AppView.CONVERSATIONS:
         return <ConversationsScreen {...commonScreenProps} onOpenConversation={handleOpenConversation} />;
       case AppView.MESSAGES:

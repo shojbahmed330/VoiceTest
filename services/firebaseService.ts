@@ -188,6 +188,48 @@ export const firebaseService = {
         }
     },
 
+    async reactToComment(postId: string, commentId: string, userId: string, newReaction: string): Promise<boolean> {
+        const postRef = db.collection('posts').doc(postId);
+        try {
+            await db.runTransaction(async (transaction) => {
+                const postDoc = await transaction.get(postRef);
+                if (!postDoc.exists) throw "Post does not exist!";
+
+                const postData = postDoc.data() as Post;
+                const comments = postData.comments || [];
+                const commentIndex = comments.findIndex(c => c.id === commentId);
+
+                if (commentIndex === -1) {
+                    throw "Comment not found!";
+                }
+
+                const comment = comments[commentIndex];
+                const reactions = { ...(comment.reactions || {}) };
+                const userPreviousReaction = reactions[userId];
+
+                if (userPreviousReaction === newReaction) {
+                    // User is toggling off their reaction.
+                    delete reactions[userId];
+                } else {
+                    // User is adding a new reaction or changing their existing one.
+                    reactions[userId] = newReaction;
+                }
+
+                const updatedComments = [...comments];
+                updatedComments[commentIndex] = {
+                    ...comment,
+                    reactions: reactions,
+                };
+
+                transaction.update(postRef, { comments: updatedComments });
+            });
+            return true;
+        } catch (e) {
+            console.error("Comment reaction transaction failed:", e);
+            return false;
+        }
+    },
+
     async signInWithEmail(identifier: string, pass: string): Promise<void> {
         const lowerIdentifier = identifier.toLowerCase().trim();
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -445,7 +487,7 @@ export const firebaseService = {
         }
     },
     
-    async createComment(user: User, postId: string, data: { text?: string; imageFile?: File; audioBlob?: Blob; duration?: number }): Promise<Comment | null> {
+    async createComment(user: User, postId: string, data: { text?: string; imageFile?: File; audioBlob?: Blob; duration?: number, parentId?: string }): Promise<Comment | null> {
         if (user.commentingSuspendedUntil && new Date(user.commentingSuspendedUntil) > new Date()) {
             console.warn(`User ${user.id} is suspended from commenting.`);
             return null;
@@ -460,8 +502,13 @@ export const firebaseService = {
                 id: user.id, name: user.name, username: user.username, avatarUrl: user.avatarUrl,
             },
             createdAt: new Date().toISOString(), // Temporary client-side timestamp
+            reactions: {},
         };
     
+        if (data.parentId) {
+            newComment.parentId = data.parentId;
+        }
+
         if (data.audioBlob && data.duration) {
             newComment.type = 'audio';
             newComment.duration = data.duration;
@@ -480,7 +527,6 @@ export const firebaseService = {
     
         // Prepare the object for Firestore
         const finalCommentObject = { ...newComment };
-        delete finalCommentObject.id; // ID is not stored in the array object
         finalCommentObject.createdAt = new Date(); 
     
         await postRef.update({

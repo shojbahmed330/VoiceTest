@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { RecordingState, User, Comment } from '../types';
 import Waveform from './Waveform';
@@ -11,6 +10,7 @@ import { useSettings } from '../contexts/SettingsContext';
 interface CreateCommentScreenProps {
   user: User;
   postId: string;
+  parentId?: string;
   onCommentPosted: (newComment: Comment | null, postId: string) => void;
   onSetTtsMessage: (message: string) => void;
   lastCommand: string | null;
@@ -21,7 +21,7 @@ interface CreateCommentScreenProps {
 type CommentMode = 'text' | 'image' | 'audio';
 const EMOJIS = ['😂', '❤️', '👍', '😢', '😡', '🔥', '😊', '😮'];
 
-const CreateCommentScreen: React.FC<CreateCommentScreenProps> = ({ user, postId, onCommentPosted, onSetTtsMessage, lastCommand, onCommandProcessed, onGoBack }) => {
+const CreateCommentScreen: React.FC<CreateCommentScreenProps> = ({ user, postId, parentId, onCommentPosted, onSetTtsMessage, lastCommand, onCommandProcessed, onGoBack }) => {
   const [mode, setMode] = useState<CommentMode>('text');
   
   // Audio state
@@ -116,17 +116,18 @@ const CreateCommentScreen: React.FC<CreateCommentScreenProps> = ({ user, postId,
     setIsPosting(true);
     let newComment: Comment | null = null;
     try {
+        const commonCommentData = { parentId };
         if (mode === 'text' && text.trim()) {
             onSetTtsMessage('Posting text comment...');
-            newComment = await firebaseService.createComment(user, postId, { text });
+            newComment = await firebaseService.createComment(user, postId, { ...commonCommentData, text });
         } else if (mode === 'image' && imageFile) {
             onSetTtsMessage('Uploading image comment...');
-            newComment = await firebaseService.createComment(user, postId, { imageFile });
+            newComment = await firebaseService.createComment(user, postId, { ...commonCommentData, imageFile });
         } else if (mode === 'audio' && duration > 0 && audioUrl) {
             onSetTtsMessage('Posting voice comment...');
             setRecordingState(RecordingState.UPLOADING);
             const audioBlob = await fetch(audioUrl).then(r => r.blob());
-            newComment = await firebaseService.createComment(user, postId, { duration, audioBlob });
+            newComment = await firebaseService.createComment(user, postId, { ...commonCommentData, duration, audioBlob });
         } else {
              onSetTtsMessage('Please add content to your comment.');
              setIsPosting(false);
@@ -140,7 +141,7 @@ const CreateCommentScreen: React.FC<CreateCommentScreenProps> = ({ user, postId,
         onSetTtsMessage("Sorry, there was an error posting your comment.");
         setIsPosting(false);
     }
-  }, [user, postId, onCommentPosted, onSetTtsMessage, mode, text, imageFile, duration, audioUrl]);
+  }, [user, postId, parentId, onCommentPosted, onSetTtsMessage, mode, text, imageFile, duration, audioUrl]);
 
   const handleCommand = useCallback(async (command: string) => {
     try {
