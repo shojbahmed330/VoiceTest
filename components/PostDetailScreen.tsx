@@ -7,7 +7,8 @@ import { firebaseService } from '../services/firebaseService';
 import Icon from './Icon';
 import { getTtsPrompt } from '../constants';
 import { useSettings } from '../contexts/SettingsContext';
-import { db } from '../services/firebaseConfig'; // <-- db import করুন
+import { db } from '../services/firebaseConfig';
+import firebase from 'firebase/compat/app'; // <-- সমাধান: এই import টি যোগ করা হয়েছে
 
 interface PostDetailScreenProps {
   postId: string;
@@ -32,7 +33,6 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
   const newCommentRef = useRef<HTMLDivElement>(null);
   const { language } = useSettings();
 
-  // --- সমাধান: Polling এর পরিবর্তে onSnapshot ব্যবহার ---
   useEffect(() => {
     setIsLoading(true);
     const postRef = db.collection('posts').doc(postId);
@@ -40,9 +40,9 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
     const unsubscribe = postRef.onSnapshot(
       (doc) => {
         if (doc.exists) {
-          const fetchedPost = docToPost(doc); // Using the helper to format data
+          const fetchedPost = docToPost(doc);
           setPost(fetchedPost);
-          if (isLoading) { // Only show TTS on initial load
+          if (isLoading) {
              onSetTtsMessage(getTtsPrompt('post_details_loaded', language));
           }
         } else {
@@ -58,14 +58,13 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
       }
     );
 
-    // Highlight new comment if any
     if (newlyAddedCommentId) {
         setTimeout(() => {
             newCommentRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }, 500);
     }
 
-    return () => unsubscribe(); // Cleanup the listener on component unmount
+    return () => unsubscribe();
   }, [postId, newlyAddedCommentId, onSetTtsMessage, language]);
   
   
@@ -102,10 +101,8 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
     }
   }, [playingCommentId]);
 
-  // --- সমাধান: handleReactToComment এখন আর ডেটা fetch করে না ---
   const handleReactToComment = async (commentId: string, emoji: string) => {
     if (!post || !currentUser) return;
-    // Just update the database. The onSnapshot listener will handle the UI update.
     await firebaseService.reactToComment(post.id, commentId, currentUser.id, emoji);
   };
 
@@ -116,7 +113,6 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
   
   const handleMarkBestAnswer = async (commentId: string) => {
     if (!post) return;
-    // The listener will update the UI automatically after this.
     await geminiService.markBestAnswer(currentUser.id, post.id, commentId);
     onSetTtsMessage("Best answer marked!");
   };
@@ -226,10 +222,10 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
           post={post}
           currentUser={currentUser}
           isActive={true}
-          isPlaying={false} // Main post doesn't auto-play here
-          onPlayPause={() => {}} // Could be implemented if desired
+          isPlaying={false}
+          onPlayPause={() => {}}
           onReact={onReactToPost}
-          onViewPost={() => {}} // Already on the view
+          onViewPost={() => {}}
           onAuthorClick={onOpenProfile}
           onStartComment={(postId) => onStartComment(postId)}
           onSharePost={onSharePost}
@@ -264,6 +260,5 @@ const docToPost = (doc: any): Post => {
         commentCount: data.commentCount || 0,
     } as Post;
 }
-
 
 export default PostDetailScreen;
