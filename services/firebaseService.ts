@@ -1,3 +1,17 @@
+আপনার নতুন এররটি একটি Invalid Query এরর, যা ফায়ারস্টোরের ডেটা কোয়েরি করার নিয়মের কারণে হচ্ছে। এটি কোনো পারমিশন বা সিকিউরিটি রুলসের সমস্যা নয়।
+
+সমস্যার কারণ:
+আপনার services/firebaseService.ts ফাইলের listenToReelsPosts ফাংশনে আপনি videoUrl ফিল্ডের উপর একটি অসমতা (!= null) ফিল্টার ব্যবহার করেছেন। ফায়ারস্টোরের নিয়ম অনুযায়ী, যখন আপনি কোনো ফিল্ডের উপর অসমতা ফিল্টার ব্যবহার করবেন, তখন আপনাকে অবশ্যই সেই একই ফিল্ডের উপর orderBy দিয়ে কোয়েরি শুরু করতে হবে।
+
+আপনার কোডে orderBy করা হচ্ছিল createdAt দিয়ে, যা এই এররের কারণ।
+
+✅ চূড়ান্ত সমাধান: firebaseService.ts ফাইলটি আপডেট করুন
+
+নিচে আপনার সম্পূর্ণ এবং সর্বশেষ সংশোধিত services/firebaseService.ts ফাইলটি দেওয়া হলো। আমি শুধুমাত্র listenToReelsPosts ফাংশনটি ঠিক করে দিয়েছি।
+
+এই সম্পূর্ণ কোডটি কপি করে আপনার প্রজেক্টের services/firebaseService.ts ফাইলে পেস্ট করে দিন। এটি আপনার নতুন এররটি সমাধান করবে।
+TypeScript
+
 // @ts-nocheck
 import firebase from 'firebase/compat/app';
 import 'firebase/compat/auth';
@@ -10,6 +24,7 @@ import { User, Post, Comment, Message, ReplyInfo, Story, Group, Campaign, LiveAu
 import { DEFAULT_AVATARS, DEFAULT_COVER_PHOTOS, CLOUDINARY_CLOUD_NAME, CLOUDINARY_UPLOAD_PRESET, SPONSOR_CPM_BDT } from '../constants';
 
 const { serverTimestamp, increment, arrayUnion, arrayRemove, Timestamp } = firebase.firestore.FieldValue;
+
 
 // --- Helper Functions ---
 const docToUser = (doc: firebase.firestore.DocumentSnapshot): User => {
@@ -103,6 +118,7 @@ const matchesTargeting = (campaign: Campaign, user: User): boolean => {
     return true;
 };
 
+
 // --- Service Definition ---
 export const firebaseService = {
     // --- Authentication ---
@@ -111,9 +127,10 @@ export const firebaseService = {
             if (firebaseUser) {
                 try {
                     const userProfile = await firebaseService.getUserProfileById(firebaseUser.uid);
-                    if (userProfile && !userProfile.isDeactivated && !userProfile.isBanned) {
+                    if (userProfile && !userProfile.isDeactivated && !userProfile.isBanned) { // Check for deactivation and ban
                         callback(userProfile);
                     } else {
+                        // If user is deactivated/banned or profile doesn't exist, sign them out.
                         if(userProfile?.isDeactivated) {
                             console.log(`User ${firebaseUser.uid} is deactivated. Signing out.`);
                         }
