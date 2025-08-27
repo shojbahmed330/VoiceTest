@@ -8,7 +8,7 @@ import Icon from './Icon';
 import { getTtsPrompt } from '../constants';
 import { useSettings } from '../contexts/SettingsContext';
 import { db } from '../services/firebaseConfig';
-import firebase from 'firebase/compat/app'; // <-- সমাধান: এই import টি যোগ করা হয়েছে
+import firebase from 'firebase/compat/app';
 
 interface PostDetailScreenProps {
   postId: string;
@@ -25,6 +25,19 @@ interface PostDetailScreenProps {
   onGoBack: () => void;
 }
 
+// Helper function to format post data, ensuring it's available within this file
+const docToPost = (doc: firebase.firestore.DocumentSnapshot): Post => {
+    const data = doc.data() || {};
+    return {
+        ...data,
+        id: doc.id,
+        createdAt: data.createdAt instanceof firebase.firestore.Timestamp ? data.createdAt.toDate().toISOString() : new Date().toISOString(),
+        reactions: data.reactions || {},
+        comments: data.comments || [],
+        commentCount: data.commentCount || 0,
+    } as Post;
+}
+
 const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedCommentId, currentUser, onSetTtsMessage, lastCommand, onStartComment, onReactToPost, onOpenProfile, onSharePost, scrollState, onCommandProcessed, onGoBack }) => {
   const [post, setPost] = useState<Post | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -33,6 +46,7 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
   const newCommentRef = useRef<HTMLDivElement>(null);
   const { language } = useSettings();
 
+  // --- সমাধান: Polling এবং Manual Refetch এর পরিবর্তে onSnapshot ব্যবহার ---
   useEffect(() => {
     setIsLoading(true);
     const postRef = db.collection('posts').doc(postId);
@@ -40,9 +54,9 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
     const unsubscribe = postRef.onSnapshot(
       (doc) => {
         if (doc.exists) {
-          const fetchedPost = docToPost(doc);
+          const fetchedPost = docToPost(doc); // Using the local helper to format data
           setPost(fetchedPost);
-          if (isLoading) {
+          if (isLoading) { // Only show TTS on initial load
              onSetTtsMessage(getTtsPrompt('post_details_loaded', language));
           }
         } else {
@@ -58,14 +72,15 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
       }
     );
 
+    // Highlight new comment if any
     if (newlyAddedCommentId) {
         setTimeout(() => {
             newCommentRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }, 500);
     }
 
-    return () => unsubscribe();
-  }, [postId, newlyAddedCommentId, onSetTtsMessage, language]);
+    return () => unsubscribe(); // Cleanup the listener on component unmount
+  }, [postId, newlyAddedCommentId, onSetTtsMessage, language]); // isLoading is removed from dependencies
   
   
   useEffect(() => {
@@ -101,8 +116,10 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
     }
   }, [playingCommentId]);
 
+  // --- সমাধান: handleReactToComment এখন আর ডেটা fetch করে না ---
   const handleReactToComment = async (commentId: string, emoji: string) => {
     if (!post || !currentUser) return;
+    // Just update the database. The onSnapshot listener will handle the UI update.
     await firebaseService.reactToComment(post.id, commentId, currentUser.id, emoji);
   };
 
@@ -113,6 +130,7 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
   
   const handleMarkBestAnswer = async (commentId: string) => {
     if (!post) return;
+    // The listener will update the UI automatically after this.
     await geminiService.markBestAnswer(currentUser.id, post.id, commentId);
     onSetTtsMessage("Best answer marked!");
   };
@@ -247,18 +265,5 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
     </div>
   );
 };
-
-// Helper function to format post data
-const docToPost = (doc: any): Post => {
-    const data = doc.data() || {};
-    return {
-        ...data,
-        id: doc.id,
-        createdAt: data.createdAt instanceof firebase.firestore.Timestamp ? data.createdAt.toDate().toISOString() : new Date().toISOString(),
-        reactions: data.reactions || {},
-        comments: data.comments || [],
-        commentCount: data.commentCount || 0,
-    } as Post;
-}
 
 export default PostDetailScreen;
