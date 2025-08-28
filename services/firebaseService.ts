@@ -6,8 +6,8 @@ import 'firebase/compat/storage';
 import { User as FirebaseUser } from 'firebase/auth';
 
 import { db, auth, storage } from './firebaseConfig';
-import { User, Post, Comment, Message, ReplyInfo, Story, Group, Campaign, LiveAudioRoom, LiveVideoRoom, Report, Notification, Lead, Author } from '../types';
-import { DEFAULT_AVATARS, DEFAULT_COVER_PHOTOS, CLOUDINARY_CLOUD_NAME, CLOUDINARY_UPLOAD_PRESET, SPONSOR_CPM_BDT } from '../constants';
+import { User, Post, Comment, Message, ReplyInfo, Story, Group, Campaign, LiveAudioRoom, LiveVideoRoom, Report, Notification, Lead, Author, Conversation, FriendshipStatus, Event, GroupChat, JoinRequest, AdminUser } from '../types';
+import { DEFAULT_AVATARS, DEFAULT_COVER_PHOTOS, CLOUDINARY_CLOUD_NAME, CLOUDINARY_UPLOAD_PRESET, SPONSOR_CPM_BDT, getTtsPrompt } from '../constants';
 
 const { serverTimestamp, increment, arrayUnion, arrayRemove, Timestamp } = firebase.firestore.FieldValue;
 
@@ -627,6 +627,55 @@ export const firebaseService = {
     
     async updateProfile(userId: string, updates: Partial<User>): Promise<void> {
         await db.collection('users').doc(userId).update(updates);
+    },
+
+    async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post, coverPhotoUrl: string }> => {
+        try {
+            // 1. Upload image to Cloudinary (using existing helper)
+            const { url: downloadURL } = await uploadMediaToCloudinary(file, `cover_photo_${userId}_${Date.now()}.jpeg`);
+
+            // 2. Update user's profile in Firestore
+            const userRef = db.collection('users').doc(userId);
+            await userRef.update({
+                coverPhotoUrl: downloadURL
+            });
+
+            // 3. Create a new post for the cover photo update
+            const userDoc = await userRef.get();
+            if (!userDoc.exists) {
+                throw new Error("User not found for creating cover photo post.");
+            }
+            const userData = userDoc.data() as User;
+
+            const newPostRef = db.collection('posts').doc();
+            const newPost: Post = {
+                id: newPostRef.id,
+                author: {
+                    id: userData.id,
+                    name: userData.name,
+                    username: userData.username,
+                    avatarUrl: userData.avatarUrl,
+                    privacySettings: userData.privacySettings,
+                },
+                caption: `${userData.name} updated their cover photo.`,
+                imageUrl: downloadURL,
+                postType: 'cover_photo_update',
+                commentCount: 0,
+                reactions: {},
+                comments: [],
+                createdAt: serverTimestamp() as any, // Use serverTimestamp for consistency
+                isPinned: false,
+                duration: 0, // Default value for non-audio/video posts
+            };
+
+            await newPostRef.set(newPost);
+
+            console.log("Cover photo updated and post created successfully.");
+            return { post: { ...newPost, createdAt: new Date().toISOString() }, coverPhotoUrl: downloadURL }; // Return with ISO string for client
+        } catch (error) {
+            console.error("Error updating cover photo in Firebase service:", error);
+            throw new Error("Update failed in service.");
+        }
     },
     
     async searchUsers(query: string): Promise<User[]> {
@@ -1318,6 +1367,7 @@ export const firebaseService = {
                     name: sponsorProfile.name,
                     username: sponsorProfile.username,
                     avatarUrl: sponsorProfile.avatarUrl,
+                    privacySettings: sponsorProfile.privacySettings, // Add privacy settings
                 },
                 caption: randomCampaign.caption,
                 createdAt: new Date().toISOString(),
