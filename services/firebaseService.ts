@@ -629,8 +629,8 @@ export const firebaseService = {
         await db.collection('users').doc(userId).update(updates);
     },
 
-    async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post, coverPhotoUrl: string } {
-        try {
+async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverPhotoUrl: string }> {
+    try {
             // 1. Upload image to Cloudinary (using existing helper)
             const { url: downloadURL } = await uploadMediaToCloudinary(file, `cover_photo_${userId}_${Date.now()}.jpeg`);
 
