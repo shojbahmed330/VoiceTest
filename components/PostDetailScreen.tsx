@@ -1,14 +1,12 @@
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { Post, User, Comment, ScrollState } from '../types';
 import { PostCard } from './PostCard';
 import CommentCard from './CommentCard';
 import { geminiService } from '../services/geminiService';
-import { firebaseService } from '../services/firebaseService';
 import Icon from './Icon';
 import { getTtsPrompt } from '../constants';
 import { useSettings } from '../contexts/SettingsContext';
-import { db } from '../services/firebaseConfig';
-import firebase from 'firebase/compat/app';
 
 interface PostDetailScreenProps {
   postId: string;
@@ -16,26 +14,13 @@ interface PostDetailScreenProps {
   currentUser: User;
   onSetTtsMessage: (message: string) => void;
   lastCommand: string | null;
-  onStartComment: (postId: string, parentId?: string) => void;
+  onStartComment: (postId: string) => void;
   onReactToPost: (postId: string, emoji: string) => void;
   onOpenProfile: (userName: string) => void;
   onSharePost: (post: Post) => void;
   scrollState: ScrollState;
   onCommandProcessed: () => void;
   onGoBack: () => void;
-}
-
-// Helper function to format post data, ensuring it's available within this file
-const docToPost = (doc: firebase.firestore.DocumentSnapshot): Post => {
-    const data = doc.data() || {};
-    return {
-        ...data,
-        id: doc.id,
-        createdAt: data.createdAt instanceof firebase.firestore.Timestamp ? data.createdAt.toDate().toISOString() : new Date().toISOString(),
-        reactions: data.reactions || {},
-        comments: data.comments || [],
-        commentCount: data.commentCount || 0,
-    } as Post;
 }
 
 const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedCommentId, currentUser, onSetTtsMessage, lastCommand, onStartComment, onReactToPost, onOpenProfile, onSharePost, scrollState, onCommandProcessed, onGoBack }) => {
@@ -46,43 +31,64 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
   const newCommentRef = useRef<HTMLDivElement>(null);
   const { language } = useSettings();
 
-  // --- সমাধান: Polling এবং Manual Refetch এর পরিবর্তে onSnapshot ব্যবহার ---
-  useEffect(() => {
-    setIsLoading(true);
-    const postRef = db.collection('posts').doc(postId);
-    
-    const unsubscribe = postRef.onSnapshot(
-      (doc) => {
-        if (doc.exists) {
-          const fetchedPost = docToPost(doc); // Using the local helper to format data
-          setPost(fetchedPost);
-          if (isLoading) { // Only show TTS on initial load
-             onSetTtsMessage(getTtsPrompt('post_details_loaded', language));
-          }
-        } else {
-          setPost(null);
-          onSetTtsMessage("This post could not be found. It may have been deleted.");
-        }
-        setIsLoading(false);
-      },
-      (error) => {
-        console.error("Error listening to post details:", error);
-        setIsLoading(false);
-        onSetTtsMessage("Failed to load post details.");
-      }
-    );
 
-    // Highlight new comment if any
-    if (newlyAddedCommentId) {
+  const fetchPostDetails = useCallback(async () => {
+      return await geminiService.getPostById(postId);
+  }, [postId]);
+
+  // Effect for initial fetching and handling newly added comments
+  useEffect(() => {
+    let isMounted = true;
+    
+    const initialFetch = async () => {
+      setIsLoading(true);
+      const fetchedPost = await fetchPostDetails();
+      if (!isMounted || !fetchedPost) {
+          setIsLoading(false);
+          // Handle post not found case
+          return;
+      }
+
+      setPost(fetchedPost);
+      setIsLoading(false);
+      onSetTtsMessage(getTtsPrompt('post_details_loaded', language));
+
+      if (newlyAddedCommentId) {
+        const newComment = fetchedPost.comments.find(c => c.id === newlyAddedCommentId);
+        if (newComment && newComment.type === 'audio') {
+            setPlayingCommentId(newlyAddedCommentId);
+        }
         setTimeout(() => {
             newCommentRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }, 500);
-    }
+      }
+    };
+    
+    initialFetch();
 
-    return () => unsubscribe(); // Cleanup the listener on component unmount
-  }, [postId, newlyAddedCommentId, onSetTtsMessage, language]); // isLoading is removed from dependencies
-  
-  
+    return () => {
+        isMounted = false;
+    }
+  }, [postId, newlyAddedCommentId, fetchPostDetails, onSetTtsMessage, language]);
+
+  // Effect for polling for new comments
+  useEffect(() => {
+    const commentInterval = setInterval(async () => {
+        const freshPost = await geminiService.getPostById(postId);
+        setPost(currentPost => {
+            if (freshPost && currentPost && freshPost.commentCount > currentPost.commentCount) {
+                return freshPost;
+            }
+            return currentPost;
+        });
+    }, 5000);
+
+    return () => {
+        clearInterval(commentInterval);
+    }
+  }, [postId]);
+
+
   useEffect(() => {
     const scrollContainer = scrollContainerRef.current;
     if (!scrollContainer || scrollState === 'none') {
@@ -98,7 +104,7 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
         }
         animationFrameId = requestAnimationFrame(animateScroll);
     };
-    
+
     animationFrameId = requestAnimationFrame(animateScroll);
 
     return () => {
@@ -115,24 +121,14 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
         setPlayingCommentId(comment.id);
     }
   }, [playingCommentId]);
-
-  // --- সমাধান: handleReactToComment এখন আর ডেটা fetch করে না ---
-  const handleReactToComment = async (commentId: string, emoji: string) => {
-    if (!post || !currentUser) return;
-    // Just update the database. The onSnapshot listener will handle the UI update.
-    await firebaseService.reactToComment(post.id, commentId, currentUser.id, emoji);
-  };
-
-  const handleReply = (comment: Comment) => {
-    if (!post) return;
-    onStartComment(post.id, comment.id);
-  };
   
   const handleMarkBestAnswer = async (commentId: string) => {
     if (!post) return;
-    // The listener will update the UI automatically after this.
-    await geminiService.markBestAnswer(currentUser.id, post.id, commentId);
-    onSetTtsMessage("Best answer marked!");
+    const updatedPost = await geminiService.markBestAnswer(currentUser.id, post.id, commentId);
+    if (updatedPost) {
+        setPost(updatedPost);
+        onSetTtsMessage("Best answer marked!");
+    }
   };
 
   const handleCommand = useCallback(async (command: string) => {
@@ -184,46 +180,6 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
     }
   }, [lastCommand, handleCommand]);
 
-  const renderCommentTree = (allComments: Comment[], parentId?: string): React.ReactNode[] => {
-    return allComments
-      .filter(comment => comment.parentId === parentId)
-      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
-      .map(comment => {
-        const isBestAnswer = post?.bestAnswerId === comment.id;
-        const canMarkBest = post?.postType === 'question' && post?.author.id === currentUser.id;
-        const isNew = comment.id === newlyAddedCommentId;
-        const replies = renderCommentTree(allComments, comment.id);
-
-        return (
-            <div key={comment.id}>
-                <div ref={isNew ? newCommentRef : null} className={`p-0.5 rounded-lg transition-all duration-500 ${isBestAnswer ? 'bg-gradient-to-br from-emerald-500 to-green-500' : ''} ${isNew ? 'ring-2 ring-rose-500' : ''}`}>
-                    <div className={`${isBestAnswer ? 'bg-slate-800 rounded-md' : ''}`}>
-                        <CommentCard
-                            comment={comment}
-                            currentUser={currentUser}
-                            isPlaying={playingCommentId === comment.id}
-                            onPlayPause={() => handlePlayComment(comment)}
-                            onAuthorClick={onOpenProfile}
-                            onReact={handleReactToComment}
-                            onReply={handleReply}
-                        />
-                        {canMarkBest && !isBestAnswer && (
-                            <button onClick={() => handleMarkBestAnswer(comment.id)} className="mt-2 ml-14 text-xs font-semibold text-emerald-400 hover:underline">
-                                Mark as best answer
-                            </button>
-                        )}
-                    </div>
-                </div>
-                {replies.length > 0 && (
-                    <div className="ml-5 mt-2 pl-4 border-l-2 border-slate-600 flex flex-col gap-3">
-                        {replies}
-                    </div>
-                )}
-            </div>
-        );
-      });
-  };
-
 
   if (isLoading) {
     return <div className="flex items-center justify-center h-full"><p className="text-slate-300 text-xl">Loading post...</p></div>;
@@ -240,12 +196,12 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
           post={post}
           currentUser={currentUser}
           isActive={true}
-          isPlaying={false}
-          onPlayPause={() => {}}
+          isPlaying={false} // Main post doesn't auto-play here
+          onPlayPause={() => {}} // Could be implemented if desired
           onReact={onReactToPost}
-          onViewPost={() => {}}
+          onViewPost={() => {}} // Already on the view
           onAuthorClick={onOpenProfile}
-          onStartComment={(postId) => onStartComment(postId)}
+          onStartComment={onStartComment}
           onSharePost={onSharePost}
         />
 
@@ -256,7 +212,29 @@ const PostDetailScreen: React.FC<PostDetailScreenProps> = ({ postId, newlyAddedC
                 <span>Add a Comment</span>
              </button>
              <div className="flex flex-col gap-3">
-                {post.comments.length > 0 ? renderCommentTree(post.comments) : (
+                {post.comments.length > 0 ? [...post.comments].sort((a,b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()).map(comment => {
+                    const isBestAnswer = post.bestAnswerId === comment.id;
+                    const canMarkBest = post.postType === 'question' && post.author.id === currentUser.id;
+                    const isNew = comment.id === newlyAddedCommentId;
+
+                    return (
+                        <div key={comment.id} ref={isNew ? newCommentRef : null} className={`p-0.5 rounded-lg transition-all duration-500 ${isBestAnswer ? 'bg-gradient-to-br from-emerald-500 to-green-500' : ''} ${isNew ? 'ring-2 ring-rose-500' : ''}`}>
+                             <div className={`${isBestAnswer ? 'bg-slate-800 rounded-md' : ''}`}>
+                                <CommentCard 
+                                    comment={comment}
+                                    isPlaying={playingCommentId === comment.id}
+                                    onPlayPause={() => handlePlayComment(comment)}
+                                    onAuthorClick={onOpenProfile}
+                                />
+                                {canMarkBest && !isBestAnswer && (
+                                    <button onClick={() => handleMarkBestAnswer(comment.id)} className="mt-2 ml-14 text-xs font-semibold text-emerald-400 hover:underline">
+                                        Mark as best answer
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    )
+                }) : (
                     <p className="text-slate-400 text-center py-4">Be the first to comment.</p>
                 )}
              </div>

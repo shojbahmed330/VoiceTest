@@ -6,8 +6,8 @@ import 'firebase/compat/storage';
 import { User as FirebaseUser } from 'firebase/auth';
 
 import { db, auth, storage } from './firebaseConfig';
-import { User, Post, Comment, Message, ReplyInfo, Story, Group, Campaign, LiveAudioRoom, LiveVideoRoom, Report, Notification, Lead, Author, Conversation, FriendshipStatus, Event, GroupChat, JoinRequest, AdminUser } from '../types';
-import { DEFAULT_AVATARS, DEFAULT_COVER_PHOTOS, CLOUDINARY_CLOUD_NAME, CLOUDINARY_UPLOAD_PRESET, SPONSOR_CPM_BDT, getTtsPrompt } from '../constants';
+import { User, Post, Comment, Message, ReplyInfo, Story, Group, Campaign, LiveAudioRoom, LiveVideoRoom, Report, Notification, Lead, Author } from '../types';
+import { DEFAULT_AVATARS, DEFAULT_COVER_PHOTOS, CLOUDINARY_CLOUD_NAME, CLOUDINARY_UPLOAD_PRESET, SPONSOR_CPM_BDT } from '../constants';
 
 const { serverTimestamp, increment, arrayUnion, arrayRemove, Timestamp } = firebase.firestore.FieldValue;
 
@@ -158,7 +158,7 @@ export const firebaseService = {
                 const userRef = db.collection('users').doc(user.uid);
                 const usernameRef = db.collection('usernames').doc(username.toLowerCase());
 
-                const newUserProfile: Omit<User, 'id'> = {
+                const newUserProfile: Omit<User, 'id' | 'createdAt'> = {
                     name: fullName,
                     name_lowercase: fullName.toLowerCase(),
                     username: username.toLowerCase(),
@@ -176,56 +176,14 @@ export const firebaseService = {
                     createdAt: serverTimestamp(),
                 };
                 
-                const batch = db.batch();
-                batch.set(userRef, newUserProfile);
-                batch.set(usernameRef, { userId: user.uid });
-                await batch.commit();
-
+                // In a real app, this should be a batched write or transaction
+                await userRef.set(newUserProfile);
+                await usernameRef.set({ userId: user.uid });
                 return true;
             }
             return false;
         } catch (error) {
             console.error("Sign up error:", error);
-            return false;
-        }
-    },
-
-    async reactToComment(postId: string, commentId: string, userId: string, newReaction: string): Promise<boolean> {
-        const postRef = db.collection('posts').doc(postId);
-        try {
-            await db.runTransaction(async (transaction) => {
-                const postDoc = await transaction.get(postRef);
-                if (!postDoc.exists) throw "Post does not exist!";
-
-                const postData = postDoc.data() as Post;
-                const comments = postData.comments || [];
-                const commentIndex = comments.findIndex(c => c.id === commentId);
-
-                if (commentIndex === -1) {
-                    throw "Comment not found!";
-                }
-
-                const comment = comments[commentIndex];
-                const reactions = { ...(comment.reactions || {}) };
-                const userPreviousReaction = reactions[userId];
-
-                if (userPreviousReaction === newReaction) {
-                    delete reactions[userId];
-                } else {
-                    reactions[userId] = newReaction;
-                }
-
-                const updatedComments = [...comments];
-                updatedComments[commentIndex] = {
-                    ...comment,
-                    reactions: reactions,
-                };
-
-                transaction.update(postRef, { comments: updatedComments });
-            });
-            return true;
-        } catch (e) {
-            console.error("Comment reaction transaction failed:", e);
             return false;
         }
     },
@@ -238,6 +196,7 @@ export const firebaseService = {
         if (emailRegex.test(lowerIdentifier)) {
             emailToSignIn = lowerIdentifier;
         } else {
+            // It's a username, look it up in the 'usernames' collection
             try {
                 const usernameDocRef = db.collection('usernames').doc(lowerIdentifier);
                 const usernameDoc = await usernameDocRef.get();
@@ -250,7 +209,7 @@ export const firebaseService = {
                 const userProfile = await this.getUserProfileById(userId);
 
                 if (!userProfile) {
-                    throw new Error("User profile not found for this username.");
+                     throw new Error("User profile not found for this username.");
                 }
                 emailToSignIn = userProfile.email;
 
@@ -274,6 +233,8 @@ export const firebaseService = {
     signOutUser: () => auth.signOut(),
 
     async isUsernameTaken(username: string): Promise<boolean> {
+        // Checks a public collection 'usernames' where each doc ID is a username.
+        // This is more secure as it doesn't require querying the private 'users' collection.
         const usernameDocRef = db.collection('usernames').doc(username.toLowerCase());
         const usernameDoc = await usernameDocRef.get();
         return usernameDoc.exists;
@@ -288,11 +249,13 @@ export const firebaseService = {
         return null;
     },
 
-    async getUsersByIds(userIds: string[]): Promise<User[]> {
+     async getUsersByIds(userIds: string[]): Promise<User[]> {
         if (userIds.length === 0) {
             return [];
         }
         const usersRef = db.collection('users');
+        // Firestore 'in' query is limited to 10 items.
+        // We need to batch the requests if there are more than 10.
         const userPromises: Promise<firebase.firestore.QuerySnapshot>[] = [];
         for (let i = 0; i < userIds.length; i += 10) {
             const chunk = userIds.slice(i, i + 10);
@@ -321,8 +284,10 @@ export const firebaseService = {
                     callback([]);
                     return;
                 }
-                const friends = await this.getUsersByIds(friendIds);
+                const friendPromises = friendIds.map(id => this.getUserProfileById(id));
+                const friends = (await Promise.all(friendPromises)).filter(f => f !== null) as User[];
                 
+                // Mock online status for the demo
                 const friendsWithStatus = friends.map((friend, index) => ({
                     ...friend,
                     onlineStatus: index % 3 === 0 ? 'online' : 'offline',
@@ -335,22 +300,12 @@ export const firebaseService = {
     },
 
     // --- Posts ---
-    listenToFeedPosts(currentUserId: string, friendIds: string[], callback: (posts: Post[]) => void) {
-        const authorsToFetch = [currentUserId, ...(friendIds || [])];
-
-        if (authorsToFetch.length === 0) {
-            callback([]);
-            return () => {};
-        }
-        
-        const q = db.collection('posts')
-            .where('author.id', 'in', authorsToFetch.slice(0, 10))
-            .orderBy('createdAt', 'desc')
-            .limit(50);
-            
+    listenToFeedPosts(currentUserId: string, callback: (posts: Post[]) => void) {
+        const q = db.collection('posts').orderBy('createdAt', 'desc').limit(50);
         return q.onSnapshot((snapshot) => {
             const feedPosts = snapshot.docs.map(docToPost);
-            callback(feedPosts);
+            const filtered = feedPosts.filter(p => p.author?.id === currentUserId || p.author?.privacySettings?.postVisibility === 'public');
+            callback(filtered);
         });
     },
 
@@ -362,7 +317,7 @@ export const firebaseService = {
         return q.onSnapshot((snapshot) => {
             const explorePosts = snapshot.docs
                 .map(docToPost)
-                .filter(post => post.author.id !== currentUserId && !post.isSponsored);
+                .filter(post => post.author.id !== currentUserId && !post.isSponsored); // Filter client-side
             callback(explorePosts);
         });
     },
@@ -370,7 +325,6 @@ export const firebaseService = {
     listenToReelsPosts(callback: (posts: Post[]) => void) {
         const q = db.collection('posts')
             .where('videoUrl', '!=', null)
-            .where('author.privacySettings.postVisibility', '==', 'public')
             .orderBy('videoUrl')
             .orderBy('createdAt', 'desc')
             .limit(50);
@@ -409,6 +363,7 @@ export const firebaseService = {
 
         const userId = user.id;
 
+        // Handle file upload (photo/video) via Cloudinary
         if (media.mediaFile) {
             const { url, type } = await uploadMediaToCloudinary(media.mediaFile, `post_${userId}_${Date.now()}`);
             if (type === 'video') {
@@ -418,12 +373,14 @@ export const firebaseService = {
             }
         }
         
+        // Handle AI generated image (base64 data URL)
         if (media.generatedImageBase64) {
             const blob = await fetch(media.generatedImageBase64).then(res => res.blob());
             const { url } = await uploadMediaToCloudinary(blob, `post_ai_${userId}_${Date.now()}.jpeg`);
             postToSave.imageUrl = url;
         }
 
+        // Handle audio blob URL
         if (media.audioBlobUrl) {
             const audioBlob = await fetch(media.audioBlobUrl).then(r => r.blob());
             const { url } = await uploadMediaToCloudinary(audioBlob, `post_audio_${userId}_${Date.now()}.webm`);
@@ -442,6 +399,8 @@ export const firebaseService = {
             }
 
             const postData = postDoc.data() as Post;
+
+            // Security check: only the author can delete the post
             if (postData.author.id !== userId) {
                 console.error("Permission denied: User is not the author of the post.");
                 return false;
@@ -464,13 +423,16 @@ export const firebaseService = {
                 if (!postDoc.exists) throw "Post does not exist!";
     
                 const postData = postDoc.data() as Post;
+                // New data structure: { [userId]: emoji }
                 const reactions = { ...(postData.reactions || {}) };
                 
                 const userPreviousReaction = reactions[userId];
     
                 if (userPreviousReaction === newReaction) {
+                    // User is toggling off their reaction.
                     delete reactions[userId];
                 } else {
+                    // User is adding a new reaction or changing their existing one.
                     reactions[userId] = newReaction;
                 }
                 
@@ -483,7 +445,7 @@ export const firebaseService = {
         }
     },
     
-    async createComment(user: User, postId: string, data: { text?: string; imageFile?: File; audioBlob?: Blob; duration?: number, parentId?: string }): Promise<Comment | null> {
+    async createComment(user: User, postId: string, data: { text?: string; imageFile?: File; audioBlob?: Blob; duration?: number }): Promise<Comment | null> {
         if (user.commentingSuspendedUntil && new Date(user.commentingSuspendedUntil) > new Date()) {
             console.warn(`User ${user.id} is suspended from commenting.`);
             return null;
@@ -492,19 +454,14 @@ export const firebaseService = {
         const postRef = db.collection('posts').doc(postId);
     
         const newComment: any = {
-            id: db.collection('posts').doc().id,
+            id: db.collection('posts').doc().id, // Pre-generate ID for file naming
             postId,
             author: {
                 id: user.id, name: user.name, username: user.username, avatarUrl: user.avatarUrl,
             },
-            createdAt: new Date().toISOString(),
-            reactions: {},
+            createdAt: new Date().toISOString(), // Temporary client-side timestamp
         };
     
-        if (data.parentId) {
-            newComment.parentId = data.parentId;
-        }
-
         if (data.audioBlob && data.duration) {
             newComment.type = 'audio';
             newComment.duration = data.duration;
@@ -521,7 +478,9 @@ export const firebaseService = {
             throw new Error("Comment must have content.");
         }
     
+        // Prepare the object for Firestore
         const finalCommentObject = { ...newComment };
+        delete finalCommentObject.id; // ID is not stored in the array object
         finalCommentObject.createdAt = new Date(); 
     
         await postRef.update({
@@ -529,6 +488,7 @@ export const firebaseService = {
             commentCount: increment(1),
         });
         
+        // Return the client-side object for immediate UI update
         return newComment as Comment;
     },
 
@@ -596,7 +556,7 @@ export const firebaseService = {
             
             const commentExists = postData.comments.some(c => c.id === commentId);
             if (!commentExists) {
-                throw "Comment does not exist on this post.";
+                 throw "Comment does not exist on this post.";
             }
     
             await postRef.update({ bestAnswerId: commentId });
@@ -628,57 +588,8 @@ export const firebaseService = {
     async updateProfile(userId: string, updates: Partial<User>): Promise<void> {
         await db.collection('users').doc(userId).update(updates);
     },
-
-async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverPhotoUrl: string }> {
-    try {
-            // 1. Upload image to Cloudinary (using existing helper)
-            const { url: downloadURL } = await uploadMediaToCloudinary(file, `cover_photo_${userId}_${Date.now()}.jpeg`);
-
-            // 2. Update user's profile in Firestore
-            const userRef = db.collection('users').doc(userId);
-            await userRef.update({
-                coverPhotoUrl: downloadURL
-            });
-
-            // 3. Create a new post for the cover photo update
-            const userDoc = await userRef.get();
-            if (!userDoc.exists) {
-                throw new Error("User not found for creating cover photo post.");
-            }
-            const userData = userDoc.data() as User;
-
-            const newPostRef = db.collection('posts').doc();
-            const newPost: Post = {
-                id: newPostRef.id,
-                author: {
-                    id: userData.id,
-                    name: userData.name,
-                    username: userData.username,
-                    avatarUrl: userData.avatarUrl,
-                    privacySettings: userData.privacySettings,
-                },
-                caption: `${userData.name} updated their cover photo.`,
-                imageUrl: downloadURL,
-                postType: 'cover_photo_update',
-                commentCount: 0,
-                reactions: {},
-                comments: [],
-                createdAt: serverTimestamp() as any, // Use serverTimestamp for consistency
-                isPinned: false,
-                duration: 0, // Default value for non-audio/video posts
-            };
-
-            await newPostRef.set(newPost);
-
-            console.log("Cover photo updated and post created successfully.");
-            return { post: { ...newPost, createdAt: new Date().toISOString() }, coverPhotoUrl: downloadURL }; // Return with ISO string for client
-        } catch (error) {
-            console.error("Error updating cover photo in Firebase service:", error);
-            throw new Error("Update failed in service.");
-        }
-    },
     
-    async searchUsers(query: string): Promise<User[]> {
+     async searchUsers(query: string): Promise<User[]> {
         const lowerQuery = query.toLowerCase();
         const nameQuery = db.collection('users').where('name_lowercase', '>=', lowerQuery).where('name_lowercase', '<=', lowerQuery + '\uf8ff');
         const usernameQuery = db.collection('users').where('username', '>=', lowerQuery).where('username', '<=', lowerQuery + '\uf8ff');
@@ -694,8 +605,12 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
 
     async blockUser(currentUserId: string, targetUserId: string): Promise<boolean> {
         const currentUserRef = db.collection('users').doc(currentUserId);
+        const targetUserRef = db.collection('users').doc(targetUserId);
         try {
-            await currentUserRef.update({ blockedUserIds: arrayUnion(targetUserId) });
+            await db.runTransaction(async (transaction) => {
+                transaction.update(currentUserRef, { blockedUserIds: arrayUnion(targetUserId) });
+                transaction.update(targetUserRef, { blockedUserIds: arrayUnion(currentUserId) });
+            });
             return true;
         } catch (error) {
             console.error("Failed to block user:", error);
@@ -705,8 +620,12 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
 
     async unblockUser(currentUserId: string, targetUserId: string): Promise<boolean> {
         const currentUserRef = db.collection('users').doc(currentUserId);
+        const targetUserRef = db.collection('users').doc(targetUserId);
         try {
-            await currentUserRef.update({ blockedUserIds: arrayRemove(targetUserId) });
+            await db.runTransaction(async (transaction) => {
+                transaction.update(currentUserRef, { blockedUserIds: arrayRemove(targetUserId) });
+                transaction.update(targetUserRef, { blockedUserIds: arrayRemove(currentUserId) });
+            });
             return true;
         } catch (error) {
             console.error("Failed to unblock user:", error);
@@ -770,7 +689,7 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
         });
     },
 
-    listenToRoom(roomId: string, type: 'audio' | 'video', callback: (room: any) => void) {
+    listenToRoom(roomId: string, type: 'audio' | 'video', callback: (room: LiveAudioRoom | LiveVideoRoom | null) => void) {
         const collectionName = type === 'audio' ? 'liveAudioRooms' : 'liveVideoRooms';
         return db.collection(collectionName).doc(roomId).onSnapshot((d) => {
             if (d.exists) {
@@ -780,14 +699,14 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
                     ...data,
                     createdAt: data.createdAt instanceof firebase.firestore.Timestamp ? data.createdAt.toDate().toISOString() : new Date().toISOString()
                 };
-                callback(roomData);
+                callback(roomData as LiveAudioRoom | LiveVideoRoom);
             } else {
-                callback(null);
+                callback(null); // Room doesn't exist or was deleted
             }
         });
     },
 
-    // --- Messages ---
+     // --- Messages ---
     listenToMessages(chatId: string, callback: (messages: Message[]) => void) {
         const q = db.collection('chats').doc(chatId).collection('messages').orderBy('createdAt', 'asc');
         return q.onSnapshot((snapshot) => {
@@ -804,7 +723,7 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
     },
     
     async sendMessage(chatId: string, message: Omit<Message, 'id' | 'createdAt'>) {
-        const messageWithTimestamp = {
+         const messageWithTimestamp = {
             ...message,
             createdAt: serverTimestamp(),
         };
@@ -812,10 +731,13 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
     },
 
     // --- Stories ---
-    async createStory(storyData: any, mediaFile: File | null): Promise<Story> {
+    async createStory(
+        storyData: Omit<Story, 'id' | 'createdAt' | 'duration' | 'contentUrl' | 'viewedBy'>,
+        mediaFile: File | null
+    ): Promise<Story> {
         const storyToSave: any = {
             ...storyData,
-            author: {
+            author: { // Denormalize author data for reads
                 id: storyData.author.id,
                 name: storyData.author.name,
                 avatarUrl: storyData.author.avatarUrl,
@@ -825,17 +747,19 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
             viewedBy: [],
         };
     
-        let duration = 5;
+        let duration = 5; // default for text/image
     
+        // If there's a media file (image or video), upload it
         if (mediaFile) {
             const { url, type } = await uploadMediaToCloudinary(mediaFile, `story_${storyData.author.id}_${Date.now()}`);
             storyToSave.contentUrl = url;
+            
             if (type === 'video') {
                 duration = 15; 
             }
-        } else if (storyData.contentUrl) {
-            const isVideo = storyData.contentUrl.endsWith('.mp4');
-            if (isVideo) duration = 15;
+        } else if (storyData.contentUrl) { // Handle mock gallery items that pass a URL directly
+             const isVideo = storyData.contentUrl.endsWith('.mp4');
+             if (isVideo) duration = 15;
         }
         
         storyToSave.duration = duration;
@@ -856,11 +780,17 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
     // --- Group Member Management ---
     async promoteGroupMember(groupId: string, userToPromote: User, newRole: 'Admin' | 'Moderator'): Promise<boolean> {
         const groupRef = db.collection('groups').doc(groupId);
-        const fieldToUpdate = newRole === 'Admin' ? 'adminIds' : 'moderatorIds';
+        const fieldToUpdate = newRole === 'Admin' ? 'admins' : 'moderators';
         try {
-            await groupRef.update({ [fieldToUpdate]: arrayUnion(userToPromote.id) });
+            const userRefOnly = { id: userToPromote.id, name: userToPromote.name, avatarUrl: userToPromote.avatarUrl, username: userToPromote.username };
+            await groupRef.update({
+                [fieldToUpdate]: arrayUnion(userRefOnly)
+            });
+            // If they were a moderator and are now an admin, remove them from moderators
             if (newRole === 'Admin') {
-                await groupRef.update({ moderatorIds: arrayRemove(userToPromote.id) });
+                await groupRef.update({
+                    moderators: arrayRemove(userRefOnly)
+                });
             }
             return true;
         } catch (error) {
@@ -871,9 +801,12 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
 
     async demoteGroupMember(groupId: string, userToDemote: User, oldRole: 'Admin' | 'Moderator'): Promise<boolean> {
         const groupRef = db.collection('groups').doc(groupId);
-        const fieldToUpdate = oldRole === 'Admin' ? 'adminIds' : 'moderatorIds';
+        const fieldToUpdate = oldRole === 'Admin' ? 'admins' : 'moderators';
         try {
-            await groupRef.update({ [fieldToUpdate]: arrayRemove(userToDemote.id) });
+             const userRefOnly = { id: userToDemote.id, name: userToDemote.name, avatarUrl: userToDemote.avatarUrl, username: userToDemote.username };
+            await groupRef.update({
+                [fieldToUpdate]: arrayRemove(userRefOnly)
+            });
             return true;
         } catch (error) {
             console.error(`Failed to demote ${userToDemote.name}:`, error);
@@ -884,10 +817,11 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
     async removeGroupMember(groupId: string, userToRemove: User): Promise<boolean> {
         const groupRef = db.collection('groups').doc(groupId);
         try {
+            const userRefOnly = { id: userToRemove.id, name: userToRemove.name, avatarUrl: userToRemove.avatarUrl, username: userToRemove.username };
             await groupRef.update({
-                memberIds: arrayRemove(userToRemove.id),
-                adminIds: arrayRemove(userToRemove.id),
-                moderatorIds: arrayRemove(userToRemove.id),
+                members: arrayRemove(userRefOnly),
+                admins: arrayRemove(userRefOnly),
+                moderators: arrayRemove(userRefOnly),
                 memberCount: increment(-1)
             });
             return true;
@@ -900,11 +834,24 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
     // --- Group Request/Post Management ---
     async approveJoinRequest(groupId: string, userId: string): Promise<void> {
         const groupRef = db.collection('groups').doc(groupId);
+        const user = await this.getUserProfileById(userId);
+        if (!user) throw new Error("User to be approved not found.");
+
         try {
-            await groupRef.update({
-                joinRequestIds: arrayRemove(userId),
-                memberIds: arrayUnion(userId),
-                memberCount: increment(1)
+            await db.runTransaction(async (transaction) => {
+                const groupDoc = await transaction.get(groupRef);
+                if (!groupDoc.exists) throw "Group does not exist!";
+                
+                const groupData = groupDoc.data() as Group;
+                
+                const requestToRemove = (groupData.joinRequests || []).find(req => req.user.id === userId);
+                const isAlreadyMember = groupData.members.some(m => m.id === userId);
+
+                transaction.update(groupRef, {
+                    joinRequests: requestToRemove ? arrayRemove(requestToRemove) : groupData.joinRequests,
+                    members: isAlreadyMember ? groupData.members : arrayUnion(user),
+                    memberCount: isAlreadyMember ? groupData.memberCount : increment(1)
+                });
             });
         } catch (e) {
             console.error("Approve join request transaction failed:", e);
@@ -914,18 +861,81 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
     async rejectJoinRequest(groupId: string, userId: string): Promise<void> {
         const groupRef = db.collection('groups').doc(groupId);
         try {
-            await groupRef.update({ joinRequestIds: arrayRemove(userId) });
+            await db.runTransaction(async (transaction) => {
+                const groupDoc = await transaction.get(groupRef);
+                if (!groupDoc.exists) throw "Group does not exist!";
+                
+                const groupData = groupDoc.data() as Group;
+                const requestToRemove = (groupData.joinRequests || []).find(req => req.user.id === userId);
+
+                if (requestToRemove) {
+                     transaction.update(groupRef, {
+                        joinRequests: arrayRemove(requestToRemove)
+                    });
+                }
+            });
         } catch (e) {
             console.error("Reject join request transaction failed:", e);
         }
     },
     
     async approvePost(postId: string): Promise<void> {
-        await db.collection('posts').doc(postId).update({ status: 'approved' });
+        const postRef = db.collection('posts').doc(postId);
+        try {
+            const postDoc = await postRef.get();
+            if (!postDoc.exists) throw "Post does not exist!";
+            const postData = postDoc.data() as Post;
+            const groupId = postData.groupId;
+            if (!groupId) return;
+
+            // Remove from pendingPosts array on group doc
+            const groupRef = db.collection('groups').doc(groupId);
+            const groupDoc = await groupRef.get();
+            if (groupDoc.exists) {
+                const groupData = groupDoc.data() as Group;
+                const postToRemove = (groupData.pendingPosts || []).find(p => p.id === postId);
+                if (postToRemove) {
+                    await groupRef.update({
+                        pendingPosts: arrayRemove(postToRemove)
+                    });
+                }
+            }
+            
+            // Update post status
+            await postRef.update({ status: 'approved' });
+        } catch (e) {
+            console.error("Approve post failed:", e);
+        }
     },
 
     async rejectPost(postId: string): Promise<void> {
-        await db.collection('posts').doc(postId).delete();
+        const postRef = db.collection('posts').doc(postId);
+        try {
+             const postDoc = await postRef.get();
+            if (!postDoc.exists) return;
+            const postData = postDoc.data() as Post;
+            const groupId = postData.groupId;
+
+            // Remove from pendingPosts array on group doc
+            if (groupId) {
+                 const groupRef = db.collection('groups').doc(groupId);
+                 const groupDoc = await groupRef.get();
+                 if (groupDoc.exists) {
+                    const groupData = groupDoc.data() as Group;
+                    const postToRemove = (groupData.pendingPosts || []).find(p => p.id === postId);
+                    if (postToRemove) {
+                        await groupRef.update({
+                            pendingPosts: arrayRemove(postToRemove)
+                        });
+                    }
+                 }
+            }
+            
+            // Actually delete the post document
+            await postRef.delete();
+        } catch (e) {
+            console.error("Reject post failed:", e);
+        }
     },
 
     // --- Admin Panel Functions ---
@@ -935,31 +945,38 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
         const campaignsColl = db.collection('campaigns');
         const reportsColl = db.collection('reports');
     
+        // 1. Get total users
         const usersSnapshot = await usersColl.get();
         const totalUsers = usersSnapshot.size;
     
+        // 2. New users today
         const twentyFourHoursAgo = firebase.firestore.Timestamp.fromDate(new Date(Date.now() - 24 * 60 * 60 * 1000));
         const newUsersQuery = usersColl.where('createdAt', '>=', twentyFourHoursAgo);
         const newUsersSnapshot = await newUsersQuery.get();
         const newUsersToday = newUsersSnapshot.size;
     
+        // 3. Posts in last 24h
         const newPostsQuery = postsColl.where('createdAt', '>=', twentyFourHoursAgo);
         const newPostsSnapshot = await newPostsQuery.get();
         const postsLast24h = newPostsSnapshot.size;
     
+        // 4. Pending campaigns
         const pendingCampaignsQuery = campaignsColl.where('status', '==', 'pending');
         const pendingCampaignsSnapshot = await pendingCampaignsQuery.get();
         const pendingCampaigns = pendingCampaignsSnapshot.size;
     
+        // 5. Active users
         const fiveMinutesAgo = firebase.firestore.Timestamp.fromDate(new Date(Date.now() - 5 * 60 * 1000));
         const activeUsersQuery = usersColl.where('lastActiveTimestamp', '>=', fiveMinutesAgo);
         const activeUsersSnapshot = await activeUsersQuery.get();
         const activeUsersNow = activeUsersSnapshot.size;
     
+        // 6. Pending reports
         const pendingReportsQuery = reportsColl.where('status', '==', 'pending');
         const pendingReportsSnapshot = await pendingReportsQuery.get();
         const pendingReports = pendingReportsSnapshot.size;
         
+        // 7. Pending payments
         const pendingPaymentsQuery = campaignsColl.where('paymentStatus', '==', 'pending');
         const pendingPaymentsSnapshot = await pendingPaymentsQuery.get();
         const pendingPayments = pendingPaymentsSnapshot.size;
@@ -1001,19 +1018,30 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
     },
     
     async suspendUserCommenting(userId: string, days: number): Promise<boolean> {
-        const suspensionEndDate = new Date();
-        suspensionEndDate.setDate(suspensionEndDate.getDate() + days);
         try {
-            await db.collection('users').doc(userId).update({ commentingSuspendedUntil: suspensionEndDate.toISOString() });
+            const suspensionEndDate = new Date();
+            suspensionEndDate.setDate(suspensionEndDate.getDate() + days);
+            await db.collection('users').doc(userId).update({
+                commentingSuspendedUntil: suspensionEndDate.toISOString()
+            });
             return true;
-        } catch(e) { return false; }
+        } catch (e) {
+            console.error("Failed to suspend user commenting:", e);
+            return false;
+        }
     },
 
     async liftUserCommentingSuspension(userId: string): Promise<boolean> {
         try {
-            await db.collection('users').doc(userId).update({ commentingSuspendedUntil: null });
+            // Setting to null effectively removes the suspension
+            await db.collection('users').doc(userId).update({
+                commentingSuspendedUntil: null 
+            });
             return true;
-        } catch(e) { return false; }
+        } catch (e) {
+            console.error("Failed to lift user commenting suspension:", e);
+            return false;
+        }
     },
 
     async getPendingCampaigns(): Promise<Campaign[]> {
@@ -1037,10 +1065,15 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
     },
 
     async deletePostAsAdmin(postId: string): Promise<boolean> {
+        const postRef = db.collection('posts').doc(postId);
         try {
-            await db.collection('posts').doc(postId).delete();
+            await postRef.delete();
+            // In a real app, also delete associated media from storage.
             return true;
-        } catch (error) { return false; }
+        } catch (error) {
+            console.error("Error deleting post as admin:", error);
+            return false;
+        }
     },
 
     async deleteCommentAsAdmin(commentId: string, postId: string): Promise<boolean> {
@@ -1055,7 +1088,7 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
                 
                 if (comments.length === updatedComments.length) {
                     console.warn(`Comment ${commentId} not found on post ${postId}.`);
-                    return;
+                    return; // No change needed
                 }
                 
                 transaction.update(postRef, {
@@ -1106,14 +1139,17 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
         });
     },
 
+    // New functions for tiered moderation
     async warnUser(userId: string, message: string): Promise<boolean> {
         try {
+            // Using a notification for simplicity. A dedicated 'warnings' subcollection would also be a good approach.
             const userNotifsRef = db.collection('users').doc(userId).collection('notifications');
             await userNotifsRef.add({
                 type: 'admin_warning',
                 message,
                 read: false,
                 createdAt: serverTimestamp(),
+                // Admin user info is not readily available client-side, so we use a system representation.
                 user: { id: 'system', name: 'Admin Team', avatarUrl: DEFAULT_AVATARS[0], username: 'admin' }
             });
             return true;
@@ -1124,10 +1160,12 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
     },
 
     async suspendUserPosting(userId: string, days: number): Promise<boolean> {
-        const suspensionEndDate = new Date();
-        suspensionEndDate.setDate(suspensionEndDate.getDate() + days);
         try {
-            await db.collection('users').doc(userId).update({ postingSuspendedUntil: suspensionEndDate.toISOString() });
+            const suspensionEndDate = new Date();
+            suspensionEndDate.setDate(suspensionEndDate.getDate() + days);
+            await db.collection('users').doc(userId).update({
+                postingSuspendedUntil: suspensionEndDate.toISOString()
+            });
             return true;
         } catch (e) {
             console.error("Failed to suspend user posting:", e);
@@ -1149,9 +1187,11 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
         const user = await this.getUserProfileById(userId);
         if (!user) return null;
 
+        // Get user's own posts
         const postsSnapshot = await db.collection('posts').where('author.id', '==', userId).orderBy('createdAt', 'desc').limit(10).get();
         const posts = postsSnapshot.docs.map(docToPost);
 
+        // Get reports against the user
         const reportsSnapshot = await db.collection('reports').where('reportedUserId', '==', userId).orderBy('createdAt', 'desc').limit(10).get();
         const reports = reportsSnapshot.docs.map(doc => ({ 
             id: doc.id, 
@@ -1159,6 +1199,8 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
             createdAt: doc.data().createdAt?.toDate().toISOString() || new Date().toISOString(),
         } as Report));
         
+        // Get user's comments (inefficient scan, acceptable for a limited-scope admin tool)
+        // This is a known limitation due to the denormalized data structure.
         const recentPostsSnapshot = await db.collection('posts').orderBy('createdAt', 'desc').limit(100).get();
         const comments: Comment[] = [];
         recentPostsSnapshot.docs.forEach(doc => {
@@ -1179,7 +1221,7 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
         try {
             const usersSnapshot = await db.collection('users').get();
             if (usersSnapshot.empty) {
-                return true;
+                return true; // No users to notify
             }
 
             const batch = db.batch();
@@ -1264,7 +1306,7 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
           batch.update(notificationsRef.doc(id), { read: true });
         });
         try {
-            await batch.commit();
+             await batch.commit();
         } catch(error) {
             console.error("Error marking notifications as read:", error);
         }
@@ -1303,6 +1345,7 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
             });
         } catch (error) {
             console.error("Failed to track ad click:", error);
+            // Fail silently, as this is a background task and shouldn't block the user.
         }
     },
 
@@ -1315,7 +1358,7 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
         return {
             id: docRef.id,
             ...leadData,
-            createdAt: new Date().toISOString(),
+            createdAt: new Date().toISOString(), // Return client-side version for immediate use
         };
     },
 
@@ -1367,7 +1410,6 @@ async updateCoverPhoto(userId: string, file: File): Promise<{ post: Post; coverP
                     name: sponsorProfile.name,
                     username: sponsorProfile.username,
                     avatarUrl: sponsorProfile.avatarUrl,
-                    privacySettings: sponsorProfile.privacySettings, // Add privacy settings
                 },
                 caption: randomCampaign.caption,
                 createdAt: new Date().toISOString(),
