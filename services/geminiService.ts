@@ -323,8 +323,12 @@ const mockApi = {
     async getUserProfile(name: string): Promise<User | null> { return Promise.resolve(null); },
     async getPostsByUser(userId: string): Promise<Post[]> { return Promise.resolve([]); },
     async updateProfile(userId: string, updates: Partial<User>): Promise<void> { return firebaseService.updateProfile(userId, updates); },
-    async updateProfilePicture(userId: string, base64Url: string, caption: string): Promise<{ updatedUser: User, newPost: Post } | null> { return Promise.resolve(null); },
-    async updateCoverPhoto(userId: string, base64Url: string, caption: string): Promise<{ updatedUser: User, newPost: Post } | null> { return Promise.resolve(null); },
+    async updateProfilePicture(userId: string, base64Url: string, caption: string): Promise<{ updatedUser: User, newPost: Post } | null> { 
+        return firebaseService.updateProfilePicture(userId, base64Url, caption); 
+    },
+    async updateCoverPhoto(userId: string, base64Url: string, caption: string): Promise<{ updatedUser: User, newPost: Post } | null> { 
+        return firebaseService.updateCoverPhoto(userId, base64Url, caption);
+    },
     async getUserById(userId: string): Promise<User | null> { return firebaseService.getUserProfileById(userId); },
     async changePassword(userId: string, currentPass: string, newPass: string): Promise<boolean> { return Promise.resolve(true); },
     async updateVoiceCoins(userId: string, amount: number): Promise<boolean> {

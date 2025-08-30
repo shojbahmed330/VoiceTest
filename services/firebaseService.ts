@@ -601,6 +601,96 @@ export const firebaseService = {
             throw error;
         }
     },
+
+    async updateProfilePicture(userId: string, base64Url: string, caption: string): Promise<{ updatedUser: User; newPost: Post } | null> {
+        const userRef = db.collection('users').doc(userId);
+        try {
+            const blob = await fetch(base64Url).then(res => res.blob());
+            const { url: newAvatarUrl } = await uploadMediaToCloudinary(blob, `avatar_${userId}_${Date.now()}.jpeg`);
+
+            await userRef.update({ avatarUrl: newAvatarUrl });
+
+            const userDoc = await userRef.get();
+            if (!userDoc.exists) return null;
+            const user = docToUser(userDoc);
+
+            const authorInfo: Author = {
+                id: user.id,
+                name: user.name,
+                username: user.username,
+                avatarUrl: newAvatarUrl,
+                privacySettings: user.privacySettings,
+            };
+
+            const newPostData = {
+                author: authorInfo,
+                caption: caption || `${user.name.split(' ')[0]} updated their profile picture.`,
+                createdAt: serverTimestamp(),
+                postType: 'profile_picture_change',
+                newPhotoUrl: newAvatarUrl,
+                reactions: {},
+                commentCount: 0,
+                comments: [],
+                duration: 0,
+            };
+
+            const postRef = await db.collection('posts').add(newPostData);
+            const newPostDoc = await postRef.get();
+            const newPost = docToPost(newPostDoc);
+
+            const updatedUser = { ...user, avatarUrl: newAvatarUrl };
+            return { updatedUser, newPost };
+
+        } catch (error) {
+            console.error("Error updating profile picture:", error);
+            return null;
+        }
+    },
+
+    async updateCoverPhoto(userId: string, base64Url: string, caption: string): Promise<{ updatedUser: User; newPost: Post } | null> {
+        const userRef = db.collection('users').doc(userId);
+        try {
+            const blob = await fetch(base64Url).then(res => res.blob());
+            const { url: newCoverUrl } = await uploadMediaToCloudinary(blob, `cover_${userId}_${Date.now()}.jpeg`);
+
+            await userRef.update({ coverPhotoUrl: newCoverUrl });
+
+            const userDoc = await userRef.get();
+            if (!userDoc.exists) return null;
+            const user = docToUser(userDoc);
+
+            const authorInfo: Author = {
+                id: user.id,
+                name: user.name,
+                username: user.username,
+                avatarUrl: user.avatarUrl,
+                privacySettings: user.privacySettings,
+            };
+
+            const newPostData = {
+                author: authorInfo,
+                caption: caption || `${user.name.split(' ')[0]} updated their cover photo.`,
+                createdAt: serverTimestamp(),
+                postType: 'cover_photo_change',
+                newPhotoUrl: newCoverUrl,
+                reactions: {},
+                commentCount: 0,
+                comments: [],
+                duration: 0,
+            };
+
+            const postRef = await db.collection('posts').add(newPostData);
+            const newPostDoc = await postRef.get();
+            const newPost = docToPost(newPostDoc);
+
+            const updatedUser = { ...user, coverPhotoUrl: newCoverUrl };
+            return { updatedUser, newPost };
+
+        } catch (error) {
+            console.error("Error updating cover photo:", error);
+            return null;
+        }
+    },
     
      async searchUsers(query: string): Promise<User[]> {
         const lowerQuery = query.toLowerCase();
