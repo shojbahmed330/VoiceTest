@@ -1,3 +1,4 @@
+
 // @ts-nocheck
 import firebase from 'firebase/compat/app';
 import 'firebase/compat/auth';
@@ -586,7 +587,19 @@ export const firebaseService = {
     },
     
     async updateProfile(userId: string, updates: Partial<User>): Promise<void> {
-        await db.collection('users').doc(userId).update(updates);
+        const userRef = db.collection('users').doc(userId);
+        const updatesToSave = { ...updates };
+    
+        if (updates.name) {
+            updatesToSave.name_lowercase = updates.name.toLowerCase();
+        }
+    
+        try {
+            await userRef.update(updatesToSave);
+        } catch (error) {
+            console.error("Error updating user profile in Firebase:", error);
+            throw error;
+        }
     },
     
      async searchUsers(query: string): Promise<User[]> {

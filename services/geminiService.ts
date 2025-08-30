@@ -1,5 +1,4 @@
 
-
 import { GoogleGenAI, Type } from "@google/genai";
 import { NLUResponse, MusicTrack, User, Post, Campaign, FriendshipStatus, Comment, Message, Conversation, ChatSettings, LiveAudioRoom, LiveVideoRoom, Group, Story, Event, GroupChat, JoinRequest, GroupCategory, StoryPrivacy, PollOption, AdminUser, CategorizedExploreFeed, Report } from '../types';
 import { VOICE_EMOJI_MAP, MOCK_MUSIC_LIBRARY, DEFAULT_AVATARS, DEFAULT_COVER_PHOTOS } from '../constants';
@@ -323,7 +322,7 @@ const mockApi = {
     },
     async getUserProfile(name: string): Promise<User | null> { return Promise.resolve(null); },
     async getPostsByUser(userId: string): Promise<Post[]> { return Promise.resolve([]); },
-    async updateProfile(userId: string, updates: Partial<User>): Promise<void> { return Promise.resolve(); },
+    async updateProfile(userId: string, updates: Partial<User>): Promise<void> { return firebaseService.updateProfile(userId, updates); },
     async updateProfilePicture(userId: string, base64Url: string, caption: string): Promise<{ updatedUser: User, newPost: Post } | null> { return Promise.resolve(null); },
     async updateCoverPhoto(userId: string, base64Url: string, caption: string): Promise<{ updatedUser: User, newPost: Post } | null> { return Promise.resolve(null); },
     async getUserById(userId: string): Promise<User | null> { return firebaseService.getUserProfileById(userId); },
